@@ -130,7 +130,7 @@ async def manual_audio_generation(text):
         globalVariables.tesseract_language = "eng"
 
     try:
-        await edgeTTSEngine.tts_engine(text)
+        await edgeTTSEngine.tts_engine(text, test=True)
     except Exception as e:
         messagebox.showerror("Error", str(e))
 

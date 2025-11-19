@@ -23,7 +23,7 @@ def play_audio(audio):
     pygame.mixer.music.unload()
 
 
-async def tts_engine(text) -> None:
+async def tts_engine(text, test=False) -> None:
     if not os.path.exists(globalVariables.audio_path_string):
         os.makedirs(globalVariables.audio_path_string)
 
@@ -32,7 +32,7 @@ async def tts_engine(text) -> None:
     first_5_words = re.sub(r'[^a-zA-Z0-9]', '', first_5_words)
     audio_file = globalVariables.audio_path_string + "/" + first_5_words + ".mp3"
 
-    if globalVariables.already_talked:
+    if globalVariables.already_talked and not test:
         return
 
     if os.path.exists(audio_file):

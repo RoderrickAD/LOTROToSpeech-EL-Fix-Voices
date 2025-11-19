@@ -1,0 +1,8 @@
+keyboard
+pygame
+edge-tts
+pytesseract
+plyer
+opencv-python
+pyautogui
+elevenlabs
