@@ -25,7 +25,7 @@ def play_audio(audio):
     pygame.mixer.music.unload()
 
 
-def tts_engine(text):
+def tts_engine(text, test=False):
     create_api_key_file()
     create_elevenlabs_model_file()
 
@@ -44,7 +44,7 @@ def tts_engine(text):
 
     model = load_elevenlabs_model()
 
-    if globalVariables.already_talked:
+    if globalVariables.already_talked and not test:
         return
 
     if os.path.exists(audio_file):
@@ -59,17 +59,16 @@ def tts_engine(text):
 
                     voice = setVoiceByGender.set_voice("elevenlabs")
 
-                    print(voice)
-
                     if model:
                         set_model = model
                     else:
                         set_model = "eleven_turbo_v2_5"
 
-                    audio = client.generate(
+                    audio = client.text_to_speech.convert(
+                        voice_id=voice,
                         text=text,
-                        voice=voice,
-                        model=set_model
+                        model_id=set_model,
+                        output_format="mp3_44100_128"
                     )
 
                     save(audio, audio_file)

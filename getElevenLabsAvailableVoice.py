@@ -18,16 +18,21 @@ def load_api_key():
 
 
 def get_elevenlabs_default_voice():
-    client = ElevenLabs(api_key=load_api_key())
+    try:
+        client = ElevenLabs(api_key=load_api_key())
 
-    response = client.voices.get_all()
+        voices_response = client.voices.get_all(show_legacy=False)
+        all_voices = voices_response.voices
 
-    male_voice = next((voice for voice in response.voices if voice.labels.get("gender") == "male"), None)
-    female_voice = next((voice for voice in response.voices if voice.labels.get("gender") == "female"), None)
+        for voice in all_voices:
+            if voice.labels and voice.labels.get("gender", "").lower() == "male":
+                return voice.voice_id
 
-    selected_voice = male_voice if male_voice else female_voice
+        for voice in all_voices:
+            if voice.labels and voice.labels.get("gender", "").lower() == "female":
+                return voice.voice_id
 
-    if selected_voice:
-        return selected_voice.name
-    else:
-        return ""
+        return all_voices[0].voice_id if all_voices else None
+
+    except Exception:
+        return None

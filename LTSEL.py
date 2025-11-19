@@ -137,7 +137,7 @@ def monitor_loop():
 
 def manual_audio_generation(text):
     try:
-        elevenLabsTTSEngine.tts_engine(text)
+        elevenLabsTTSEngine.tts_engine(text, test=True)
     except Exception as e:
         messagebox.showerror("Error", str(e))
 

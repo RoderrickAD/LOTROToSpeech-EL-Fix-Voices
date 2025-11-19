@@ -19,13 +19,23 @@ def load_api_key():
 
 def show_all_available_voices():
     client = ElevenLabs(api_key=load_api_key())
-
     response = client.voices.get_all()
 
-    male_voices = [voice.name for voice in response.voices if voice.labels.get("gender") == "male"]
-    female_voices = [voice.name for voice in response.voices if voice.labels.get("gender") == "female"]
+    male_voices = [
+        f"{voice.name}  |  ID: {voice.voice_id}"
+        for voice in response.voices
+        if voice.labels.get("gender") == "male"
+    ]
 
-    # Build the string output
-    result = "Male voices:\n" + "\n".join(male_voices) + "\n\nFemale voices:\n" + "\n".join(female_voices)
+    female_voices = [
+        f"{voice.name}  |  ID: {voice.voice_id}"
+        for voice in response.voices
+        if voice.labels.get("gender") == "female"
+    ]
+
+    result = (
+            "Male voices:\n" + "\n".join(male_voices) +
+            "\n\nFemale voices:\n" + "\n".join(female_voices)
+    )
 
     return result
