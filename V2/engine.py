@@ -37,12 +37,8 @@ class VoiceEngine:
         return ratio <= 0.85
 
     def fetch_voices(self):
-        """ Lädt Stimmen (blockierend, wenn nötig) """
         api_key = self.config.get("api_key", "").strip()
-        if not api_key: 
-            log_message("API Key fehlt!")
-            return []
-            
+        if not api_key: return []
         try:
             headers = {"xi-api-key": api_key}
             resp = requests.get("https://api.elevenlabs.io/v1/voices", headers=headers)
@@ -50,10 +46,7 @@ class VoiceEngine:
                 self.voices = resp.json().get('voices', [])
                 log_message(f"{len(self.voices)} Stimmen geladen.")
                 return self.voices
-            else:
-                log_message(f"API Fehler beim Laden: {resp.text}")
-        except Exception as e:
-            log_message(f"Verbindungsfehler: {e}")
+        except: pass
         return []
 
     def get_npc_from_log(self):
@@ -70,26 +63,21 @@ class VoiceEngine:
         return "Unknown", "Unknown"
 
     def select_voice(self, npc_name, npc_gender):
-        # NOTFALL-FIX: Wenn keine Stimmen da sind, lade sie JETZT!
         if not self.voices:
             log_message("Keine Stimmen im Speicher. Versuche Laden...")
             self.fetch_voices()
-            if not self.voices:
-                return None, "Fehler: Laden fehlgeschlagen"
+            if not self.voices: return None, "Laden fehlgeschlagen"
 
         mapping = load_mapping()
         if npc_name in mapping:
-            # Validierung überspringen, wir vertrauen dem Mapping
             return mapping[npc_name], "Gedächtnis"
 
-        # Namens-Match
         for v in self.voices:
             if npc_name.lower() in v['name'].lower():
                 mapping[npc_name] = v['voice_id']
                 save_mapping(mapping)
                 return v['voice_id'], "Namens-Match"
 
-        # Hash
         filtered = [v for v in self.voices if npc_gender.lower() in v.get('labels', {}).get('gender', '').lower()]
         if not filtered: filtered = self.voices
         
@@ -113,8 +101,6 @@ class VoiceEngine:
 
         npc_log, gender = self.get_npc_from_log()
         name = npc_log if npc_log != "Unknown" else npc_name_fallback
-        
-        # Voice Selection mit Auto-Fetch
         vid, method = self.select_voice(name, gender)
         
         if not vid: 
@@ -161,36 +147,18 @@ class VoiceEngine:
             return None
 
     def crop_to_content(self, img):
-        """ 
-        Intelligenter Zuschnitt: Sucht den Text-Block und entfernt Rauschen.
-        """
         gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-        
-        # Morphologie zum Verbinden (damit kleine Lücken nicht stören)
-        kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (10, 10))
-        dilated = cv2.dilate(gray, kernel, iterations=1)
-        
-        # Konturen auf dem maskierten Bild suchen
-        contours, _ = cv2.findContours(dilated, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        
-        if not contours: return img
-
-        # Nimm die größte Kontur (das ist der Textblock)
-        # Kleine weiße Punkte am Rand werden so ignoriert!
-        largest = max(contours, key=cv2.contourArea)
-        
-        x, y, w, h = cv2.boundingRect(largest)
-        
-        # Padding
-        pad = 10
-        h_img, w_img = img.shape[:2]
-        
-        x = max(0, x - pad)
-        y = max(0, y - pad)
-        w = min(w_img - x, w + 2*pad)
-        h = min(h_img - y, h + 2*pad)
-        
-        return img[y:y+h, x:x+w]
+        coords = cv2.findNonZero(gray)
+        if coords is not None:
+            x, y, w, h = cv2.boundingRect(coords)
+            pad = 10
+            h_img, w_img = img.shape[:2]
+            x = max(0, x - pad)
+            y = max(0, y - pad)
+            w = min(w_img - x, w + 2*pad)
+            h = min(h_img - y, h + 2*pad)
+            return img[y:y+h, x:x+w]
+        return img
 
     def auto_find_quest_text(self, img):
         h_img, w_img = img.shape[:2]
@@ -203,13 +171,11 @@ class VoiceEngine:
 
         roi = img[margin_top:h_img-margin_bottom, margin_lr:w_img-margin_lr]
         
-        # HSV Filter
         hsv = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
         lower_white = np.array([0, 0, 160]) 
-        upper_white = np.array([180, 60, 255]) 
+        upper_white = np.array([180, 50, 255]) 
         mask = cv2.inRange(hsv, lower_white, upper_white)
         
-        # Verschmelzen
         kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (25, 5))
         dilated = cv2.dilate(mask, kernel, iterations=2)
         
@@ -237,7 +203,6 @@ class VoiceEngine:
             candidates.sort(key=lambda x: x[1], reverse=True)
             best_cnt = candidates[0][0]
 
-        # Grober Schnitt
         rx, ry, rw, rh = cv2.boundingRect(best_cnt)
         pad = 5
         rx1 = max(0, rx - pad)
@@ -248,15 +213,10 @@ class VoiceEngine:
         cropped_roi = roi[ry1:ry2, rx1:rx2]
         cropped_mask = mask[ry1:ry2, rx1:rx2]
         
-        # Maskieren
         masked_image = cv2.bitwise_and(cropped_roi, cropped_roi, mask=cropped_mask)
-        
-        # 7. NEU: Verbesserter Auto-Trim
         final_image = self.crop_to_content(masked_image)
         
-        # Debug
         cv2.imwrite("last_detection_debug.png", final_image)
-        
         return final_image
 
     def run_ocr(self):
@@ -270,7 +230,20 @@ class VoiceEngine:
             config = r'--oem 3 --psm 6'
             text = pytesseract.image_to_string(gray, config=config, lang='eng+deu')
             
-            return re.sub(r'\s+', ' ', text).strip()
+            # Bereinigen
+            clean = re.sub(r'\s+', ' ', text).strip()
+            
+            # --- NEU: SPEICHERN FÜR DEBUGGING ---
+            try:
+                with open("last_recognized_text.txt", "w", encoding="utf-8") as f:
+                    f.write("--- RAW TESSERACT OUTPUT ---\n")
+                    f.write(text)
+                    f.write("\n\n--- CLEANED OUTPUT (SEND TO AI) ---\n")
+                    f.write(clean)
+            except: pass
+            # ------------------------------------
+            
+            return clean
         except Exception as e:
             log_message(f"OCR Fehler: {e}")
             return ""
