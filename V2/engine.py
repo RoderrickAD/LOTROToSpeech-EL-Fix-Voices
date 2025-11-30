@@ -295,7 +295,7 @@ class VoiceEngine:
                        found_positions["bottom_right"][1] + self.templates["bottom_right"].shape[0])
         
         # Padding
-        padding = 10
+        padding = 30
         final_x1 = max(0, final_x1 - padding)
         final_y1 = max(0, final_y1 - padding)
         final_x2 = min(img.shape[1], final_x2 + padding)
