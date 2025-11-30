@@ -6,6 +6,7 @@ import os
 import time
 import pygame
 import re
+import difflib # WICHTIG: Für den intelligenten Text-Vergleich
 from utils import load_config, load_mapping, save_mapping, log_message
 
 class VoiceEngine:
@@ -14,19 +15,40 @@ class VoiceEngine:
         self.voices = []
         pygame.mixer.init()
         
-        # Tesseract Pfad setzen
+        # Tesseract Pfad setzen (mit Fallback)
         tess_path = self.config.get("tesseract_path", r"C:\Program Files\Tesseract-OCR\tesseract.exe")
         pytesseract.pytesseract.tesseract_cmd = tess_path
 
+    def is_new_text(self, new_text, old_text):
+        """ 
+        Prüft intelligent, ob der Text wirklich neu ist.
+        Ignoriert kleine OCR-Fehler (z.B. fehlendes Komma).
+        """
+        # Ignoriere sehr kurze Texte (oft UI Müll oder Zahlen)
+        if not new_text or len(new_text) < 15: 
+            return False
+            
+        if not old_text:
+            return True
+            
+        # Berechne Ähnlichkeit (0.0 bis 1.0)
+        # Wenn der Text zu mehr als 85% identisch ist, behandeln wir ihn als "schon vorgelesen"
+        ratio = difflib.SequenceMatcher(None, new_text, old_text).ratio()
+        
+        if ratio > 0.85:
+            return False
+            
+        return True
+
     def fetch_voices(self):
-        """ Lädt Stimmen von ElevenLabs """
-        api_key = self.config.get("api_key", "").strip() # .strip() entfernt versehentliche Leerzeichen
+        """ Lädt die Stimmen von ElevenLabs """
+        api_key = self.config.get("api_key", "").strip()
         
         if not api_key:
-            log_message("Kein API Key in den Einstellungen gefunden.")
+            log_message("Kein API Key konfiguriert.")
             return []
 
-        # WICHTIG: Hier muss die URL absolut sauber stehen, ohne Klammern []
+        # WICHTIG: Saubere URL ohne Formatierungszeichen
         url = "https://api.elevenlabs.io/v1/voices"
         
         try:
@@ -36,170 +58,161 @@ class VoiceEngine:
             if response.status_code == 200:
                 data = response.json()
                 self.voices = data.get('voices', [])
-                log_message(f"{len(self.voices)} Stimmen erfolgreich geladen.")
+                log_message(f"{len(self.voices)} Stimmen geladen.")
                 return self.voices
             else:
-                log_message(f"Fehler beim Laden der Stimmen (Code {response.status_code}): {response.text}")
+                log_message(f"API Fehler beim Laden der Stimmen: {response.text}")
         except Exception as e:
-            log_message(f"Kritischer Verbindungsfehler: {e}")
+            log_message(f"Verbindungsfehler: {e}")
         
         return []
 
     def get_npc_from_log(self):
-        """ Liest das LOTRO Plugin Log """
+        """ Versucht den NPC Namen aus der Script.log zu lesen """
         log_path = self.config.get("lotro_log_path", "")
         if not os.path.exists(log_path):
             return "Unknown", "Unknown"
         
         try:
-            # 'utf-8' mit 'ignore' verhindert Abstürze bei Sonderzeichen
             with open(log_path, "r", encoding="utf-8", errors="ignore") as f:
                 lines = f.readlines()
                 if lines:
                     last_line = lines[-1].strip()
-                    # Simpler Gender Check im Namen
                     gender = "Male"
-                    lower_line = last_line.lower()
-                    if "female" in lower_line or "frau" in lower_line or "she" in lower_line:
+                    lower = last_line.lower()
+                    # Einfache Gender-Erkennung im Namen (kann erweitert werden)
+                    if "female" in lower or "frau" in lower or "she" in lower:
                         gender = "Female"
                     return last_line, gender
-        except Exception as e:
-            # Fehler hier nicht loggen, um Spam zu vermeiden, nur leise abfangen
+        except:
             pass
-            
         return "Unknown", "Unknown"
 
     def select_voice(self, npc_name, npc_gender):
-        """ Wählt Stimme intelligent aus """
+        """ Wählt die passendste Stimme aus """
         mapping = load_mapping()
         
-        # 1. Gespeichert?
+        # 1. Gedächtnis prüfen
         if npc_name in mapping:
-            # Prüfen ob die gespeicherte Stimme noch existiert (Validierung)
             saved_id = mapping[npc_name]
-            # Wenn wir Stimmen geladen haben, prüfen wir, ob die ID noch gültig ist
+            # Validierung: Prüfen ob Stimme existiert (nur wenn wir online sind)
             if self.voices:
                 valid_ids = [v['voice_id'] for v in self.voices]
                 if saved_id in valid_ids:
                     return saved_id, "Gedächtnis"
             else:
-                # Wenn Offline/Fehler, vertrauen wir dem Gedächtnis einfach
-                return saved_id, "Gedächtnis (Offline)"
-        
-        # Falls keine Stimmen geladen wurden (wegen API Fehler), abbrechen
-        if not self.voices:
-            return None, "Keine Stimmen verfügbar (API Fehler?)"
+                 return saved_id, "Gedächtnis (Offline)"
 
-        # 2. Namens-Match
+        if not self.voices:
+            return None, "Fehler: Keine Stimmen geladen"
+
+        # 2. Namens-Match (NPC Name ist Teil des Stimmennamens)
         for v in self.voices:
             if npc_name.lower() in v['name'].lower():
-                voice_id = v['voice_id']
-                mapping[npc_name] = voice_id
+                vid = v['voice_id']
+                mapping[npc_name] = vid
                 save_mapping(mapping)
-                return voice_id, "Namens-Match"
+                return vid, "Namens-Match"
 
-        # 3. MD5 Hash Auswahl (Stabil)
-        # Filtern nach Geschlecht (wenn möglich)
-        filtered_voices = []
+        # 3. Hash Auswahl (Stabil & nach Geschlecht)
+        filtered = []
         target_gender = npc_gender.lower()
         
         for v in self.voices:
-            # Labels sicherheitshalber prüfen
+            # Labels sicher prüfen
             labels = v.get('labels') or {}
-            v_gender = labels.get('gender', '').lower()
+            g = labels.get('gender', '').lower()
             
-            if target_gender == "female" and "female" in v_gender:
-                filtered_voices.append(v)
-            elif target_gender == "male" and "male" in v_gender and "female" not in v_gender:
-                filtered_voices.append(v)
+            if target_gender == "female" and "female" in g: 
+                filtered.append(v)
+            elif target_gender == "male" and "male" in g and "female" not in g: 
+                filtered.append(v)
         
-        # Fallback: Wenn Filter leer ist (oder Gender unbekannt), nimm alle
-        if not filtered_voices:
-            filtered_voices = self.voices
+        # Fallback auf alle Stimmen, wenn Filter leer
+        if not filtered: 
+            filtered = self.voices
 
-        # Konsistente Auswahl per Hash
+        # MD5 Hash für stabile Auswahl
         hash_obj = hashlib.md5(npc_name.encode('utf-8'))
-        index = int(hash_obj.hexdigest(), 16) % len(filtered_voices)
-        selected = filtered_voices[index]
+        idx = int(hash_obj.hexdigest(), 16) % len(filtered)
+        selected = filtered[idx]
         
         # Speichern
         mapping[npc_name] = selected['voice_id']
         save_mapping(mapping)
-        
-        return selected['voice_id'], "Berechnet (Stabil)"
+        return selected['voice_id'], "Berechnet"
 
     def generate_and_play(self, text, npc_name_fallback="Unknown"):
-        """ Erzeugt TTS und spielt es ab """
-        npc_name_log, gender = self.get_npc_from_log()
+        """ Holt Audio von ElevenLabs und spielt es ab """
+        npc_log, gender = self.get_npc_from_log()
         
-        # Wir bevorzugen den Namen aus dem Log, falls vorhanden
-        if npc_name_log and npc_name_log != "Unknown":
-            final_name = npc_name_log
-        else:
-            final_name = npc_name_fallback
+        # Bevorzuge den Namen aus dem Log, sonst Fallback
+        final_name = npc_log if npc_log != "Unknown" else npc_name_fallback
         
         voice_id, method = self.select_voice(final_name, gender)
         
         if not voice_id:
-            log_message("Abbruch: Keine Voice ID ermittelt (API Key prüfen oder Stimmen nicht geladen).")
+            log_message("Keine Stimme gefunden (API Key oder Verbindung prüfen).")
             return
 
-        log_message(f"Spreche als: '{final_name}' (Stimme via {method})")
+        log_message(f"Spreche: '{final_name}' ({method})")
 
         api_key = self.config.get("api_key", "").strip()
-        headers = {
-            "xi-api-key": api_key,
-            "Content-Type": "application/json"
-        }
-        
-        # Sprachmodell Einstellungen
-        data = {
-            "text": text,
-            "model_id": "eleven_turbo_v2_5",
-            "voice_settings": {"stability": 0.5, "similarity_boost": 0.75}
-        }
-        
-        tts_url = f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}"
         
         try:
-            response = requests.post(tts_url, headers=headers, json=data)
+            headers = {
+                "xi-api-key": api_key, 
+                "Content-Type": "application/json"
+            }
+            data = {
+                "text": text,
+                "model_id": "eleven_turbo_v2_5",
+                "voice_settings": {"stability": 0.5, "similarity_boost": 0.75}
+            }
             
-            if response.status_code == 200:
-                # Temporäre Datei sicher speichern
+            # API Request
+            tts_url = f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}"
+            resp = requests.post(tts_url, headers=headers, json=data)
+            
+            if resp.status_code == 200:
+                # Temporäre Datei
                 filename = os.path.join(os.getcwd(), "temp_audio.mp3")
                 with open(filename, "wb") as f:
-                    f.write(response.content)
+                    f.write(resp.content)
                 
-                # Abspielen
+                # Abspielen mit Pygame
                 pygame.mixer.music.load(filename)
                 pygame.mixer.music.play()
                 while pygame.mixer.music.get_busy():
                     time.sleep(0.1)
                 pygame.mixer.music.unload()
-                
-                # Optional: Datei danach löschen oder behalten (hier: behalten wir sie kurz)
             else:
-                log_message(f"ElevenLabs TTS Fehler: {response.text}")
+                log_message(f"TTS Fehler: {resp.text}")
         except Exception as e:
             log_message(f"Audio Fehler: {e}")
 
     def run_ocr(self):
-        """ Macht Screenshot und liest Text """
+        """ Screenshot machen und Text erkennen """
         coords = self.config.get("ocr_coords", [0, 0, 100, 100])
         try:
-            # Sicherstellen, dass Koordinaten Integer sind
             bbox = (int(coords[0]), int(coords[1]), int(coords[2]), int(coords[3]))
             
-            # Prüfen ob Bereich groß genug ist
-            if bbox[2] - bbox[0] < 10 or bbox[3] - bbox[1] < 10:
+            # Sicherheitscheck: Ist der Bereich groß genug?
+            if bbox[2] - bbox[0] < 10 or bbox[3] - bbox[1] < 10: 
                 return ""
 
             img = ImageGrab.grab(bbox=bbox)
-            text = pytesseract.image_to_string(img, lang='eng+deu') 
+            text = pytesseract.image_to_string(img, lang='eng+deu')
             
-            # Bereinigung: Zeilenumbrüche zu Leerzeichen
-            clean_text = re.sub(r'\s+', ' ', text).strip()
-            return clean_text
+            # Bereinigung: Neue Zeilen weg, doppelte Leerzeichen weg
+            clean = re.sub(r'\s+', ' ', text).strip()
+            
+            # Filter: Ignoriere Texte, die wie reiner UI-Müll aussehen
+            # (z.B. nur Zahlen oder extrem kurz < 10 Zeichen)
+            if len(clean) < 10: 
+                return ""
+                
+            return clean
         except Exception as e:
             log_message(f"OCR Fehler: {e}")
             return ""
