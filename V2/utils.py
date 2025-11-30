@@ -3,7 +3,7 @@ import os
 import datetime
 
 CONFIG_FILE = "config.json"
-MAPPING_FILE = "voice_mapping.json"
+# MAPPING_FILE wurde entfernt, da das Mapping nicht mehr direkt über UI verwaltet wird.
 LOG_FILE = "app.log"
 
 DEFAULT_CONFIG = {
@@ -13,7 +13,8 @@ DEFAULT_CONFIG = {
     "ocr_coords": None, # None bedeutet: Ganzer Monitor wird gescannt
     "hotkey": "ctrl+alt+s",
     "monitor_index": 1, # 1 = Hauptmonitor
-    "audio_delay": 0.5  # Sekunden Pause vor Sprachausgabe
+    "audio_delay": 0.5,  # Sekunden Pause vor Sprachausgabe
+    "debug_mode": False # Neu: Schaltet das Speichern von Debug-Bildern (last_detection_debug.png)
 }
 
 def load_config():
@@ -35,18 +36,7 @@ def save_config(config_data):
     with open(CONFIG_FILE, "w", encoding="utf-8") as f:
         json.dump(config_data, f, indent=4)
 
-def load_mapping():
-    if not os.path.exists(MAPPING_FILE):
-        return {}
-    try:
-        with open(MAPPING_FILE, "r", encoding="utf-8") as f:
-            return json.load(f)
-    except:
-        return {}
-
-def save_mapping(mapping_data):
-    with open(MAPPING_FILE, "w", encoding="utf-8") as f:
-        json.dump(mapping_data, f, indent=4)
+# load_mapping und save_mapping entfernt
 
 def log_message(message):
     timestamp = datetime.datetime.now().strftime("%H:%M:%S")
