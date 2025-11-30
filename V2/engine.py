@@ -40,7 +40,7 @@ class VoiceEngine:
         # Lade Templates für Template Matching
         self.templates = self._load_templates()
         
- def _load_templates(self):
+    def _load_templates(self):
         """Lädt die Template-Bilder aus dem 'templates'-Ordner als Graustufen."""
         template_dir = os.path.join(os.getcwd(), "templates")
         templates = {}
@@ -57,19 +57,16 @@ class VoiceEngine:
             if os.path.exists(filepath):
                 templates[key] = cv2.imread(filepath, cv2.IMREAD_GRAYSCALE) 
                 
-                # --- KORREKTUR DER FEHLERHAFTEN PRÜFUNG ---
-                # Prüft, ob cv2.imread None zurückgegeben hat ODER ob das Bild leer ist
+                # Korrigierte boolesche Prüfung für NumPy-Arrays
                 if templates[key] is None or templates[key].size == 0:
                     log_message(f"WARNUNG: Konnte Template '{filepath}' nicht laden oder Bild ist leer.")
                     success = False
-                    break # Beende Schleife, da kritische Ressource fehlt
-                # ------------------------------------------
+                    break 
             else:
                 log_message(f"FEHLER: Template '{filepath}' nicht gefunden.")
                 success = False
                 break
 
-        # Korrigierte boolesche Prüfung
         if success and len(templates) == len(template_names):
             log_message(f"{len(templates)} Templates erfolgreich geladen.")
             return templates
@@ -319,7 +316,6 @@ class VoiceEngine:
             return self._fallback_auto_find_quest_text(img)
 
         # Ermittle die Koordinaten des Dialogfensters (Bounding Box)
-        # Die min/max Logik stellt sicher, dass wir die äußersten Ränder erwischen
         final_x1 = min(found_positions["top_left"][0], found_positions["bottom_left"][0])
         final_y1 = min(found_positions["top_left"][1], found_positions["top_right"][1])
         final_x2 = max(found_positions["top_right"][0] + self.templates["top_right"].shape[1], 
