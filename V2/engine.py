@@ -40,8 +40,8 @@ class VoiceEngine:
         # Lade Templates für Template Matching
         self.templates = self._load_templates()
         
-    def _load_templates(self):
-        """Lädt die Template-Bilder aus dem 'templates'-Ordner als Graustufen (Performance-Optimierung)."""
+ def _load_templates(self):
+        """Lädt die Template-Bilder aus dem 'templates'-Ordner als Graustufen."""
         template_dir = os.path.join(os.getcwd(), "templates")
         templates = {}
         template_names = {
@@ -51,18 +51,26 @@ class VoiceEngine:
             "bottom_left": "bottom_left.png"
         }
 
+        success = True
         for key, filename in template_names.items():
             filepath = os.path.join(template_dir, filename)
             if os.path.exists(filepath):
-                # Lade Templates direkt als Graustufen, um Konvertierungen in der Schleife zu vermeiden
                 templates[key] = cv2.imread(filepath, cv2.IMREAD_GRAYSCALE) 
-                if templates[key] is None:
-                    log_message(f"WARNUNG: Konnte Template '{filepath}' nicht laden.")
+                
+                # --- KORREKTUR DER FEHLERHAFTEN PRÜFUNG ---
+                # Prüft, ob cv2.imread None zurückgegeben hat ODER ob das Bild leer ist
+                if templates[key] is None or templates[key].size == 0:
+                    log_message(f"WARNUNG: Konnte Template '{filepath}' nicht laden oder Bild ist leer.")
+                    success = False
+                    break # Beende Schleife, da kritische Ressource fehlt
+                # ------------------------------------------
             else:
                 log_message(f"FEHLER: Template '{filepath}' nicht gefunden.")
-                return None 
+                success = False
+                break
 
-        if len(templates) == len(template_names) and all(templates.values()):
+        # Korrigierte boolesche Prüfung
+        if success and len(templates) == len(template_names):
             log_message(f"{len(templates)} Templates erfolgreich geladen.")
             return templates
         else:
