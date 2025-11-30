@@ -16,13 +16,11 @@ class VoiceEngine:
         self.config = load_config()
         self.voices = []
         
-        # Audio Init
         try:
             pygame.mixer.init()
         except Exception as e:
             log_message(f"Audio Init Fehler: {e}")
         
-        # Audio Cache
         self.cache_dir = os.path.join(os.getcwd(), "AudioCache")
         if not os.path.exists(self.cache_dir):
             os.makedirs(self.cache_dir)
@@ -46,7 +44,10 @@ class VoiceEngine:
                 self.voices = resp.json().get('voices', [])
                 log_message(f"{len(self.voices)} Stimmen geladen.")
                 return self.voices
-        except: pass
+            else:
+                log_message(f"API Fehler beim Laden: {resp.text}")
+        except Exception as e:
+            log_message(f"Verbindungsfehler: {e}")
         return []
 
     def get_npc_from_log(self):
@@ -63,10 +64,13 @@ class VoiceEngine:
         return "Unknown", "Unknown"
 
     def select_voice(self, npc_name, npc_gender):
+        # FIX: Audio Abbruch
         if not self.voices:
             log_message("Keine Stimmen im Speicher. Versuche Laden...")
             self.fetch_voices()
-            if not self.voices: return None, "Laden fehlgeschlagen"
+            if not self.voices: 
+                # Wenn auch Laden fehlschlägt, nimm feste ID (Rachel) als Notfall
+                return "21m00Tcm4TlvDq8ikWAM", "NOTFALL (Rachel)" 
 
         mapping = load_mapping()
         if npc_name in mapping:
@@ -101,8 +105,12 @@ class VoiceEngine:
 
         npc_log, gender = self.get_npc_from_log()
         name = npc_log if npc_log != "Unknown" else npc_name_fallback
+        
         vid, method = self.select_voice(name, gender)
         
+        if method == "NOTFALL (Rachel)": 
+            log_message(f"WARNUNG: Notfall-Stimme verwendet. API Key prüfen!")
+
         if not vid: 
             log_message("ABBRUCH: Konnte keine Stimme zuweisen.")
             return
@@ -148,16 +156,25 @@ class VoiceEngine:
 
     def crop_to_content(self, img):
         gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-        coords = cv2.findNonZero(gray)
+        
+        # Stärkere Rauschunterdrückung vor dem Zuschnitt
+        denoised = cv2.medianBlur(gray, 5) 
+        
+        coords = cv2.findNonZero(denoised)
         if coords is not None:
             x, y, w, h = cv2.boundingRect(coords)
-            pad = 10
+            
+            # Etwas weniger Padding
+            pad = 5
             h_img, w_img = img.shape[:2]
+            
             x = max(0, x - pad)
             y = max(0, y - pad)
             w = min(w_img - x, w + 2*pad)
             h = min(h_img - y, h + 2*pad)
+            
             return img[y:y+h, x:x+w]
+        
         return img
 
     def auto_find_quest_text(self, img):
@@ -171,11 +188,13 @@ class VoiceEngine:
 
         roi = img[margin_top:h_img-margin_bottom, margin_lr:w_img-margin_lr]
         
+        # 1. Weiß-Maske (gegen Gelb)
         hsv = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
         lower_white = np.array([0, 0, 160]) 
         upper_white = np.array([180, 50, 255]) 
         mask = cv2.inRange(hsv, lower_white, upper_white)
         
+        # 2. Verschmelzen (KLEIN)
         kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (25, 5))
         dilated = cv2.dilate(mask, kernel, iterations=2)
         
@@ -191,6 +210,7 @@ class VoiceEngine:
             if area < 5000: continue
             
             center_x = x + (w / 2)
+            # Nur Blöcke auf der linken Seite (Story-Spalte)
             if center_x < (mid_x + roi_w * 0.1):
                 candidates.append((cnt, area))
         
@@ -213,10 +233,15 @@ class VoiceEngine:
         cropped_roi = roi[ry1:ry2, rx1:rx2]
         cropped_mask = mask[ry1:ry2, rx1:rx2]
         
+        # 3. Maskieren
         masked_image = cv2.bitwise_and(cropped_roi, cropped_roi, mask=cropped_mask)
+        
+        # 4. Auto-Trim (Schwarze Ränder weg)
         final_image = self.crop_to_content(masked_image)
         
+        # Debug
         cv2.imwrite("last_detection_debug.png", final_image)
+        
         return final_image
 
     def run_ocr(self):
@@ -226,24 +251,42 @@ class VoiceEngine:
 
             optimized_img = self.auto_find_quest_text(img)
             
+            # Das Bild ist jetzt schon perfekt: Nur weißer Text auf Schwarz
             gray = cv2.cvtColor(optimized_img, cv2.COLOR_BGR2GRAY)
-            config = r'--oem 3 --psm 6'
-            text = pytesseract.image_to_string(gray, config=config, lang='eng+deu')
             
-            # Bereinigen
-            clean = re.sub(r'\s+', ' ', text).strip()
+            # OCR mit Rohtext-Ausgabe
+            raw_text = pytesseract.image_to_string(gray, config=r'--oem 3 --psm 6', lang='eng+deu')
             
-            # --- NEU: SPEICHERN FÜR DEBUGGING ---
+            # Post-Processing: Entferne unnötige Zeilen (die nicht in Anführungszeichen stehen)
+            lines = raw_text.split('\n')
+            
+            # Nur Zeilen behalten, die mit ' oder " beginnen oder enden, oder Teil eines langen Textes sind
+            cleaned_lines = []
+            for line in lines:
+                stripped = line.strip()
+                if not stripped: continue
+                
+                # Wenn Zeile mit ' oder " beginnt oder endet, ist es Dialog
+                if stripped.startswith(('"', "'")) or stripped.endswith(('"', "'", ".", "!", "?")):
+                    cleaned_lines.append(stripped)
+                # Alternativ: Wenn es wie ein Wort aussieht (kein Müll) und lang genug ist
+                elif len(stripped) > 5 and not any(c in stripped for c in ['|', '_', '-']):
+                    cleaned_lines.append(stripped)
+
+            # Zusammenfügen und Leerzeichen normalisieren
+            clean_output = ' '.join(cleaned_lines)
+            clean_output = re.sub(r'\s+', ' ', clean_output).strip()
+            
+            # Speichern für Debugging
             try:
                 with open("last_recognized_text.txt", "w", encoding="utf-8") as f:
                     f.write("--- RAW TESSERACT OUTPUT ---\n")
-                    f.write(text)
-                    f.write("\n\n--- CLEANED OUTPUT (SEND TO AI) ---\n")
-                    f.write(clean)
+                    f.write(raw_text)
+                    f.write("\n\n--- FILTERED OUTPUT (SEND TO AI) ---\n")
+                    f.write(clean_output)
             except: pass
-            # ------------------------------------
             
-            return clean
+            return clean_output
         except Exception as e:
             log_message(f"OCR Fehler: {e}")
             return ""
