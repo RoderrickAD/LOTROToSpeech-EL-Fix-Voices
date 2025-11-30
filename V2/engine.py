@@ -252,49 +252,35 @@ class VoiceEngine:
         
         return img
 
-    def auto_find_quest_text(self, img):
+def auto_find_quest_text(self, img):
         if self.templates is None:
-            log_message("Template Matching nicht verfügbar, Templates fehlen. Fallback auf frühere Methode.")
+            log_message("Template Matching nicht verfügbar. Fallback auf frühere Methode.")
             return self._fallback_auto_find_quest_text(img)
 
         gray_screenshot = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
         
         found_positions = {}
-        threshold = 0.85 # Übereinstimmungsschwelle (0.8 = 80% Match)
+        threshold = 0.80 # Auf 0.80 gesenkt für bessere Toleranz
 
         for key, template_img in self.templates.items():
-            if template_img is None: continue # Sicherstellen, dass Template geladen wurde
+            if template_img is None: continue
             
-            # Konvertiere Template zu Graustufen, falls noch nicht geschehen
             gray_template = cv2.cvtColor(template_img, cv2.COLOR_BGR2GRAY)
             
-            # Führe Template Matching durch
             res = cv2.matchTemplate(gray_screenshot, gray_template, cv2.TM_CCOEFF_NORMED)
             min_val, max_val, min_loc, max_loc = cv2.minMaxLoc(res)
 
             if max_val >= threshold:
-                found_positions[key] = max_loc # top-left corner of the matched region
+                found_positions[key] = max_loc 
             else:
-                log_message(f"WARNUNG: Template '{key}' wurde nicht mit ausreichender Genauigkeit ({max_val:.2f}) gefunden.")
-                # Wenn ein kritisches Template fehlt, können wir nicht fortfahren
+                log_message(f"WARNUNG: Template '{key}' wurde nicht mit ausreichender Genauigkeit ({max_val:.2f}) gefunden. Fallback.")
                 return self._fallback_auto_find_quest_text(img) 
 
-        # Wenn nicht alle vier Ecken gefunden wurden, Fallback
         if len(found_positions) < 4:
-            log_message("WARNUNG: Nicht alle vier Ecken-Templates gefunden. Fallback auf frühere Methode.")
+            log_message("WARNUNG: Nicht alle vier Ecken-Templates gefunden. Fallback.")
             return self._fallback_auto_find_quest_text(img)
 
-        # Ermittle die Koordinaten des Dialogfensters
-        # top_left_x, top_left_y
-        tl_x, tl_y = found_positions["top_left"]
-        # bottom_right_x, bottom_right_y (Hinzugerechnet um die Breite/Höhe des Templates)
-        br_x, br_y = found_positions["bottom_right"]
-        br_x += self.templates["bottom_right"].shape[1] 
-        br_y += self.templates["bottom_right"].shape[0]
-
-        # Stellen Sie sicher, dass die Koordinaten sinnvoll sind
-        # (tl sollte links-oben, br rechts-unten sein)
-        # Manchmal kann die Erkennung leicht variieren, hier wird der kleinste X/Y für TL und größte X/Y für BR genommen
+        # Ermittle die Koordinaten des Dialogfensters (wie zuvor)
         final_x1 = min(found_positions["top_left"][0], found_positions["bottom_left"][0])
         final_y1 = min(found_positions["top_left"][1], found_positions["top_right"][1])
         final_x2 = max(found_positions["top_right"][0] + self.templates["top_right"].shape[1], 
@@ -302,7 +288,6 @@ class VoiceEngine:
         final_y2 = max(found_positions["bottom_left"][1] + self.templates["bottom_left"].shape[0], 
                        found_positions["bottom_right"][1] + self.templates["bottom_right"].shape[0])
         
-        # Ein kleines Padding um den gefundenen Dialograhmen hinzufügen
         padding = 10
         final_x1 = max(0, final_x1 - padding)
         final_y1 = max(0, final_y1 - padding)
@@ -311,52 +296,25 @@ class VoiceEngine:
 
         # Schneide das Bild auf den gefundenen Dialograhmen zu
         dialog_region = img[final_y1:final_y2, final_x1:final_x2]
-
+        
         if dialog_region.shape[0] < 50 or dialog_region.shape[1] < 50:
-            log_message("WARNUNG: Gefundener Dialogbereich ist zu klein. Fallback auf frühere Methode.")
+            log_message("WARNUNG: Gefundener Dialogbereich ist zu klein. Fallback.")
             return self._fallback_auto_find_quest_text(img)
         
         log_message(f"Dialograhmen mittels Template Matching gefunden: ({final_x1}, {final_y1}) bis ({final_x2}, {final_y2})")
 
-        # Führe die Text-Erkennung (Weiß-Maske, Binarisierung etc.) auf diesem Bereich aus
-        # Der Rest der Logik kann ähnlich bleiben, aber auf 'dialog_region' angewendet werden.
-
-        hsv = cv2.cvtColor(dialog_region, cv2.COLOR_BGR2HSV)
-        lower_white = np.array([0, 0, 160]) 
-        upper_white = np.array([180, 50, 255]) 
-        mask = cv2.inRange(hsv, lower_white, upper_white)
+        # *** NEUE VEREINFACHTE LOGIK FÜR Template Matching ***
+        # Wir überspringen die erneute Weiß-Maskierung und Konturerkennung,
+        # da der Bereich bereits exakt zugeschnitten ist.
         
-        kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (25, 5))
-        dilated = cv2.dilate(mask, kernel, iterations=2)
+        # Stattdessen nur Rauschunterdrückung und Speicherung des Debug-Bildes
+        final_image_gray = cv2.cvtColor(dialog_region, cv2.COLOR_BGR2GRAY)
+        denoised = cv2.medianBlur(final_image_gray, 3) # Leichte Rauschunterdrückung
         
-        contours, _ = cv2.findContours(dilated, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        # Speichere das zugeschnittene Graustufenbild (ohne Maskierung) für Debug
+        cv2.imwrite("last_detection_debug.png", denoised)
         
-        if not contours:
-            return dialog_region
-        
-        valid_contours = [c for c in contours if cv2.contourArea(c) > 5000]
-        if not valid_contours:
-            return dialog_region
-            
-        best_cnt = max(valid_contours, key=cv2.contourArea)
-
-        rx, ry, rw, rh = cv2.boundingRect(best_cnt)
-        pad = 5
-        rx1 = max(0, rx - pad)
-        ry1 = max(0, ry - pad)
-        rx2 = min(dialog_region.shape[1], rx + rw + pad)
-        ry2 = min(dialog_region.shape[0], ry + rh + pad)
-        
-        cropped_roi = dialog_region[ry1:ry2, rx1:rx2]
-        cropped_mask = mask[ry1:ry2, rx1:rx2]
-        
-        masked_image = cv2.bitwise_and(cropped_roi, cropped_roi, mask=cropped_mask)
-        
-        final_image = self.crop_to_content(masked_image)
-        
-        cv2.imwrite("last_detection_debug.png", final_image)
-        
-        return final_image
+        return denoised # Rückgabe des Graustufen-Bildes
 
     # *** NEU: Fallback-Methode, falls Template Matching fehlschlägt ***
     def _fallback_auto_find_quest_text(self, img):
@@ -417,19 +375,25 @@ class VoiceEngine:
         
         return final_image
 
-    def run_ocr(self):
+def run_ocr(self):
         try:
             img = self.get_monitor_screenshot()
             if img is None: return ""
 
             optimized_img = self.auto_find_quest_text(img)
             
-            gray = cv2.cvtColor(optimized_img, cv2.COLOR_BGR2GRAY)
-            _, binarized = cv2.threshold(gray, 200, 255, cv2.THRESH_BINARY) 
+            # *** KORREKTUR: Binarisierung entfernt, OCR direkt auf optimiertem Graustufenbild ***
+            # optimized_img ist jetzt bereits ein Graustufen-Bild, das denoised wurde (siehe oben)
+            
+            # Testweise die aggressive Binarisierung entfernen:
+            # _, binarized = cv2.threshold(optimized_img, 200, 255, cv2.THRESH_BINARY) 
             
             config = r'--oem 3 --psm 6 -l deu+eng' 
             
-            raw_text = pytesseract.image_to_string(binarized, config=config)
+            # OCR direkt auf dem optimierten Graustufenbild ausführen:
+            raw_text = pytesseract.image_to_string(optimized_img, config=config)
+            
+            # ... (Rest der Filterung und Fehlerbehandlung bleibt unverändert) ...
             
             lines = raw_text.split('\n')
             
@@ -449,6 +413,10 @@ class VoiceEngine:
             
             clean_output = re.sub(r'oo|Oo|oO|Solo|solo|NYZ B|„Aa 1', '', clean_output)
             clean_output = re.sub(r'‘', "'", clean_output)
+            
+            if len(clean_output) < 10:
+                log_message(f"WARNUNG: OCR-Ergebnis zu kurz. Länge: {len(clean_output)}. Abbruch.")
+                return ""
             
             try:
                 with open("last_recognized_text.txt", "w", encoding="utf-8") as f:
