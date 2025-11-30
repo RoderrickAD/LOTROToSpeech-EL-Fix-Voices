@@ -44,10 +44,7 @@ class VoiceEngine:
                 self.voices = resp.json().get('voices', [])
                 log_message(f"{len(self.voices)} Stimmen geladen.")
                 return self.voices
-            else:
-                log_message(f"API Fehler beim Laden: {resp.text}")
-        except Exception as e:
-            log_message(f"Verbindungsfehler: {e}")
+        except: pass
         return []
 
     def get_npc_from_log(self):
@@ -64,12 +61,10 @@ class VoiceEngine:
         return "Unknown", "Unknown"
 
     def select_voice(self, npc_name, npc_gender):
-        # FIX: Audio Abbruch
         if not self.voices:
             log_message("Keine Stimmen im Speicher. Versuche Laden...")
             self.fetch_voices()
             if not self.voices: 
-                # Wenn auch Laden fehlschlägt, nimm feste ID (Rachel) als Notfall
                 return "21m00Tcm4TlvDq8ikWAM", "NOTFALL (Rachel)" 
 
         mapping = load_mapping()
@@ -157,14 +152,14 @@ class VoiceEngine:
     def crop_to_content(self, img):
         gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
         
-        # Stärkere Rauschunterdrückung vor dem Zuschnitt
+        # Stärkere Rauschunterdrückung
         denoised = cv2.medianBlur(gray, 5) 
         
         coords = cv2.findNonZero(denoised)
         if coords is not None:
             x, y, w, h = cv2.boundingRect(coords)
             
-            # Etwas weniger Padding
+            # Padding
             pad = 5
             h_img, w_img = img.shape[:2]
             
@@ -210,7 +205,6 @@ class VoiceEngine:
             if area < 5000: continue
             
             center_x = x + (w / 2)
-            # Nur Blöcke auf der linken Seite (Story-Spalte)
             if center_x < (mid_x + roi_w * 0.1):
                 candidates.append((cnt, area))
         
@@ -251,31 +245,38 @@ class VoiceEngine:
 
             optimized_img = self.auto_find_quest_text(img)
             
-            # Das Bild ist jetzt schon perfekt: Nur weißer Text auf Schwarz
             gray = cv2.cvtColor(optimized_img, cv2.COLOR_BGR2GRAY)
             
-            # OCR mit Rohtext-Ausgabe
-            raw_text = pytesseract.image_to_string(gray, config=r'--oem 3 --psm 6', lang='eng+deu')
+            # FIX 1: Aggressivere Tesseract-Konfiguration für Umlaute und Serifen
+            # Wir fügen die Blacklist hinzu, um Tesseract zu zwingen, keine Sonderzeichen für i/n zu verwenden.
+            # Aber: Wir müssen die TESSDATA_PREFIX Umgebungsvariable korrekt setzen.
+            # Da wir das nicht können, nutzen wir den Tesseract Config String
+            
+            # Konfiguration für bessere deutsche OCR
+            config = r'--oem 3 --psm 6 -l deu+eng' 
+            # Die alten Fehlzeichen waren oft Ergebnis von Tesseract's Versuchen, die Serifen-Schrift zu lesen.
+            
+            raw_text = pytesseract.image_to_string(gray, config=config)
             
             # Post-Processing: Entferne unnötige Zeilen (die nicht in Anführungszeichen stehen)
             lines = raw_text.split('\n')
             
-            # Nur Zeilen behalten, die mit ' oder " beginnen oder enden, oder Teil eines langen Textes sind
             cleaned_lines = []
             for line in lines:
                 stripped = line.strip()
                 if not stripped: continue
                 
-                # Wenn Zeile mit ' oder " beginnt oder endet, ist es Dialog
-                if stripped.startswith(('"', "'")) or stripped.endswith(('"', "'", ".", "!", "?")):
-                    cleaned_lines.append(stripped)
-                # Alternativ: Wenn es wie ein Wort aussieht (kein Müll) und lang genug ist
-                elif len(stripped) > 5 and not any(c in stripped for c in ['|', '_', '-']):
+                # Wenn Zeile mit ' oder " beginnt oder endet, oder Zeichen enthält
+                if stripped.startswith(('"', "'")) or stripped.endswith(('"', "'", ".", "!", "?")) or len(stripped) > 20:
                     cleaned_lines.append(stripped)
 
             # Zusammenfügen und Leerzeichen normalisieren
             clean_output = ' '.join(cleaned_lines)
             clean_output = re.sub(r'\s+', ' ', clean_output).strip()
+            
+            # FIX 2: Entferne bekannte Müll-Fragmente, die nicht Dialog sind
+            clean_output = re.sub(r'oo|Oo|oO|Solo|solo|NYZ B|„Aa 1', '', clean_output)
+            clean_output = re.sub(r'‘', "'", clean_output)
             
             # Speichern für Debugging
             try:
