@@ -12,7 +12,7 @@ import threading
 import shutil
 from requests.exceptions import RequestException
 import mss 
-import mss.tools
+import mss.tools 
 from utils import load_config, load_mapping, save_mapping, log_message
 
 # Konstante für die maximale Cache-Größe in Bytes (z.B. 1 GB)
@@ -24,6 +24,7 @@ class VoiceEngine:
         self.voices = []
         
         try:
+            # Versuch, den Mixer zu initialisieren
             pygame.mixer.init()
         except Exception as e:
             log_message(f"Audio Init Fehler: {e}")
@@ -32,12 +33,13 @@ class VoiceEngine:
         if not os.path.exists(self.cache_dir):
             os.makedirs(self.cache_dir)
         
+        # Cache bei Initialisierung aufräumen
         self._clean_cache() 
         
         tess_path = self.config.get("tesseract_path", r"C:\Program Files\Tesseract-OCR\tesseract.exe")
         pytesseract.pytesseract.tesseract_cmd = tess_path
 
-        # *** NEU: Lade Templates bei Initialisierung ***
+        # Lade Templates bei Initialisierung
         self.templates = self._load_templates()
         
     def _load_templates(self):
@@ -54,12 +56,13 @@ class VoiceEngine:
         for key, filename in template_names.items():
             filepath = os.path.join(template_dir, filename)
             if os.path.exists(filepath):
-                templates[key] = cv2.imread(filepath, cv2.IMREAD_COLOR)
+                # Laden ohne Farbkonvertierung, da wir später zu Graustufen konvertieren
+                templates[key] = cv2.imread(filepath, cv2.IMREAD_COLOR) 
                 if templates[key] is None:
                     log_message(f"WARNUNG: Konnte Template '{filepath}' nicht laden. Möglicherweise beschädigt.")
             else:
-                log_message(f"FEHLER: Template '{filepath}' nicht gefunden. Template Matching wird nicht funktionieren.")
-                return None # Wenn ein Template fehlt, ist das Feature unbrauchbar
+                log_message(f"FEHLER: Template '{filepath}' nicht gefunden.")
+                return None 
 
         if len(templates) == len(template_names):
             log_message(f"{len(templates)} Templates erfolgreich geladen.")
@@ -69,6 +72,7 @@ class VoiceEngine:
             return None
 
     def _clean_cache(self):
+        """Löscht die ältesten Dateien, wenn der Cache die MAX_CACHE_SIZE überschreitet."""
         total_size = 0
         file_details = []
         
@@ -95,8 +99,6 @@ class VoiceEngine:
                     log_message(f"Gelöscht: {filepath}")
                 except Exception as e:
                     log_message(f"Fehler beim Löschen von {filepath}: {e}")
-
-    # --- Ursprüngliche Methoden (teilweise unverändert) ---
 
     def is_new_text(self, new_text, old_text):
         if not new_text or len(new_text) < 15: return False
@@ -145,6 +147,7 @@ class VoiceEngine:
         if npc_name in mapping:
             return mapping[npc_name], "Gedächtnis"
 
+        # Hash-basierte Zuweisung nach Geschlecht
         filtered = [v for v in self.voices if npc_gender.lower() in v.get('labels', {}).get('gender', '').lower()]
         if not filtered: filtered = self.voices
         
@@ -199,6 +202,7 @@ class VoiceEngine:
             log_message(f"TTS Fehler: {e}")
             
     def _play_audio_thread(self, filepath):
+        """Spielt die Audiodatei im Hintergrund ab."""
         try:
             if not pygame.mixer.get_init():
                  pygame.mixer.init()
@@ -216,6 +220,7 @@ class VoiceEngine:
             log_message(f"Fehler beim Abspielen: {e}")
 
     def play_audio_file(self, filepath):
+        """Öffentliche Schnittstelle für die Wiedergabe, startet den Thread."""
         threading.Thread(target=self._play_audio_thread, args=(filepath,)).start()
         
     def get_monitor_screenshot(self):
@@ -233,6 +238,7 @@ class VoiceEngine:
             return None
 
     def crop_to_content(self, img):
+        """Trimmt schwarze/leere Ränder um das gefundene Textbild."""
         gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
         denoised = cv2.medianBlur(gray, 5) 
         
@@ -252,15 +258,15 @@ class VoiceEngine:
         
         return img
 
-def auto_find_quest_text(self, img):
+    def auto_find_quest_text(self, img):
         if self.templates is None:
-            log_message("Template Matching nicht verfügbar. Fallback auf frühere Methode.")
+            log_message("Template Matching nicht verfügbar, Templates fehlen. Fallback auf frühere Methode.")
             return self._fallback_auto_find_quest_text(img)
 
         gray_screenshot = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
         
         found_positions = {}
-        threshold = 0.80 # Auf 0.80 gesenkt für bessere Toleranz
+        threshold = 0.80 # Auf 80% gesenkt für bessere Toleranz
 
         for key, template_img in self.templates.items():
             if template_img is None: continue
@@ -280,7 +286,7 @@ def auto_find_quest_text(self, img):
             log_message("WARNUNG: Nicht alle vier Ecken-Templates gefunden. Fallback.")
             return self._fallback_auto_find_quest_text(img)
 
-        # Ermittle die Koordinaten des Dialogfensters (wie zuvor)
+        # Ermittle die Koordinaten des Dialogfensters
         final_x1 = min(found_positions["top_left"][0], found_positions["bottom_left"][0])
         final_y1 = min(found_positions["top_left"][1], found_positions["top_right"][1])
         final_x2 = max(found_positions["top_right"][0] + self.templates["top_right"].shape[1], 
@@ -288,6 +294,7 @@ def auto_find_quest_text(self, img):
         final_y2 = max(found_positions["bottom_left"][1] + self.templates["bottom_left"].shape[0], 
                        found_positions["bottom_right"][1] + self.templates["bottom_right"].shape[0])
         
+        # Padding
         padding = 10
         final_x1 = max(0, final_x1 - padding)
         final_y1 = max(0, final_y1 - padding)
@@ -303,20 +310,14 @@ def auto_find_quest_text(self, img):
         
         log_message(f"Dialograhmen mittels Template Matching gefunden: ({final_x1}, {final_y1}) bis ({final_x2}, {final_y2})")
 
-        # *** NEUE VEREINFACHTE LOGIK FÜR Template Matching ***
-        # Wir überspringen die erneute Weiß-Maskierung und Konturerkennung,
-        # da der Bereich bereits exakt zugeschnitten ist.
-        
-        # Stattdessen nur Rauschunterdrückung und Speicherung des Debug-Bildes
+        # Nur Rauschunterdrückung und Graustufe, bevor OCR gestartet wird
         final_image_gray = cv2.cvtColor(dialog_region, cv2.COLOR_BGR2GRAY)
-        denoised = cv2.medianBlur(final_image_gray, 3) # Leichte Rauschunterdrückung
+        denoised = cv2.medianBlur(final_image_gray, 3) 
         
-        # Speichere das zugeschnittene Graustufenbild (ohne Maskierung) für Debug
         cv2.imwrite("last_detection_debug.png", denoised)
         
         return denoised # Rückgabe des Graustufen-Bildes
 
-    # *** NEU: Fallback-Methode, falls Template Matching fehlschlägt ***
     def _fallback_auto_find_quest_text(self, img):
         """Die ursprüngliche Methode zur Erkennung des Quest-Textes, als Fallback."""
         log_message("Führe Fallback-Text-Erkennung aus.")
@@ -349,11 +350,11 @@ def auto_find_quest_text(self, img):
         contours, _ = cv2.findContours(dilated, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         
         if not contours:
-            return potential_dialog_area
+            return cv2.cvtColor(potential_dialog_area, cv2.COLOR_BGR2GRAY) # Graustufe zurückgeben
         
         valid_contours = [c for c in contours if cv2.contourArea(c) > 5000]
         if not valid_contours:
-            return potential_dialog_area
+            return cv2.cvtColor(potential_dialog_area, cv2.COLOR_BGR2GRAY)
             
         best_cnt = max(valid_contours, key=cv2.contourArea)
 
@@ -371,29 +372,24 @@ def auto_find_quest_text(self, img):
         
         final_image = self.crop_to_content(masked_image)
         
-        cv2.imwrite("last_detection_debug_fallback.png", final_image) # Debug-Bild für Fallback
+        cv2.imwrite("last_detection_debug_fallback.png", final_image)
         
-        return final_image
+        return cv2.cvtColor(final_image, cv2.COLOR_BGR2GRAY) # Graustufe zurückgeben
 
-def run_ocr(self):
+    def run_ocr(self):
         try:
             img = self.get_monitor_screenshot()
-            if img is None: return ""
+            if img is None: 
+                log_message("Screenshot ist None.")
+                return ""
 
+            # optimized_img ist ein Graustufenbild
             optimized_img = self.auto_find_quest_text(img)
-            
-            # *** KORREKTUR: Binarisierung entfernt, OCR direkt auf optimiertem Graustufenbild ***
-            # optimized_img ist jetzt bereits ein Graustufen-Bild, das denoised wurde (siehe oben)
-            
-            # Testweise die aggressive Binarisierung entfernen:
-            # _, binarized = cv2.threshold(optimized_img, 200, 255, cv2.THRESH_BINARY) 
             
             config = r'--oem 3 --psm 6 -l deu+eng' 
             
-            # OCR direkt auf dem optimierten Graustufenbild ausführen:
+            # OCR auf dem optimierten Graustufenbild ausführen
             raw_text = pytesseract.image_to_string(optimized_img, config=config)
-            
-            # ... (Rest der Filterung und Fehlerbehandlung bleibt unverändert) ...
             
             lines = raw_text.split('\n')
             
@@ -405,17 +401,19 @@ def run_ocr(self):
                 is_dialog_start_end = stripped.startswith(('"', "'")) or stripped.endswith(('"', "'"))
                 is_dialog_end_punc = stripped.endswith((".", "!", "?"))
                 
+                # Nur Sätze mit Dialogmarkern oder sehr lange Sätze werden genommen (wie gewünscht)
                 if (is_dialog_start_end or is_dialog_end_punc) or len(stripped) > 20:
                     cleaned_lines.append(stripped)
 
             clean_output = ' '.join(cleaned_lines)
             clean_output = re.sub(r'\s+', ' ', clean_output).strip()
             
+            # Post-Processing
             clean_output = re.sub(r'oo|Oo|oO|Solo|solo|NYZ B|„Aa 1', '', clean_output)
             clean_output = re.sub(r'‘', "'", clean_output)
             
             if len(clean_output) < 10:
-                log_message(f"WARNUNG: OCR-Ergebnis zu kurz. Länge: {len(clean_output)}. Abbruch.")
+                # log_message(f"WARNUNG: OCR-Ergebnis zu kurz. Länge: {len(clean_output)}. Abbruch.")
                 return ""
             
             try:
