@@ -11,6 +11,8 @@ import numpy as np
 import threading
 import shutil
 from requests.exceptions import RequestException
+import mss 
+import mss.tools
 from utils import load_config, load_mapping, save_mapping, log_message
 
 # Konstante für die maximale Cache-Größe in Bytes (z.B. 1 GB)
