@@ -7,11 +7,10 @@ from elevenlabs.client import ElevenLabs
 import time
 from tkinter import messagebox
 import setVoiceByGender
-
+import elevenlabs_manager  # NEU: Import für die Zuweisungs-Logik
 
 def stop_audio():
     pygame.mixer.music.stop()
-
     pygame.mixer.music.unload()
 
 
@@ -34,9 +33,12 @@ def tts_engine(text, test=False):
 
     words = text.split()
 
-    first_5_words = "".join(words[:5]).lower()
-
-    first_5_words = re.sub(r'[^a-zA-Z0-9]', '', first_5_words)
+    # Create a simple filename from first few words
+    if len(words) > 0:
+        first_5_words = "".join(words[:5]).lower()
+        first_5_words = re.sub(r'[^a-zA-Z0-9]', '', first_5_words)
+    else:
+        first_5_words = "unknown_audio"
 
     audio_file = globalVariables.audio_path_string + "/" + first_5_words + ".mp3"
 
@@ -57,7 +59,32 @@ def tts_engine(text, test=False):
                         api_key=key,
                     )
 
-                    voice = setVoiceByGender.set_voice("elevenlabs")
+                    # --- NEUE LOGIK START ---
+                    voice = None
+                    
+                    # Versuche, eine dynamische Stimme zu finden, wenn wir nicht im Test-Modus sind
+                    # und der Pool geladen wurde.
+                    if hasattr(globalVariables, 'voice_pool') and globalVariables.voice_pool and not test:
+                        # Hole NPC Infos sicherheitshalber mit getattr, falls sie leer sind
+                        npc_name = getattr(globalVariables, 'npc_name', '')
+                        npc_gender = getattr(globalVariables, 'npc_gender', '')
+                        
+                        print(f"Suche Stimme für NPC: '{npc_name}' ({npc_gender})")
+                        
+                        voice = elevenlabs_manager.get_voice_for_npc(
+                            npc_name, 
+                            npc_gender, 
+                            globalVariables.voice_pool
+                        )
+                    
+                    # Fallback: Wenn keine dynamische Stimme gefunden wurde (oder wir im Test sind),
+                    # nutze die alte Standard-Logik
+                    if not voice:
+                        print("Nutze Standard-Stimme (Fallback).")
+                        voice = setVoiceByGender.set_voice("elevenlabs")
+                    else:
+                        print(f"Dynamische Stimme angewendet: {voice}")
+                    # --- NEUE LOGIK ENDE ---
 
                     if model:
                         set_model = model
