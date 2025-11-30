@@ -10,8 +10,10 @@ DEFAULT_CONFIG = {
     "api_key": "",
     "tesseract_path": r"C:\Program Files\Tesseract-OCR\tesseract.exe",
     "lotro_log_path": os.path.join(os.path.expanduser("~"), "Documents", "The Lord of the Rings Online", "Script.log"),
-    "ocr_coords": [0, 0, 500, 200],
-    "hotkey": "ctrl+alt+s"  # NEU: Standard-Hotkey
+    "ocr_coords": None, # None bedeutet: Ganzer Monitor wird gescannt
+    "hotkey": "ctrl+alt+s",
+    "monitor_index": 1, # 1 = Hauptmonitor
+    "audio_delay": 0.5  # Sekunden Pause vor Sprachausgabe
 }
 
 def load_config():
@@ -20,8 +22,8 @@ def load_config():
         return DEFAULT_CONFIG
     try:
         with open(CONFIG_FILE, "r", encoding="utf-8") as f:
-            # Stelle sicher, dass neue Keys auch in alten Configs landen
             data = json.load(f)
+            # Fehlende Keys mit Defaults ergänzen
             for key, val in DEFAULT_CONFIG.items():
                 if key not in data:
                     data[key] = val
