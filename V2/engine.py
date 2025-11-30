@@ -8,7 +8,7 @@ import re
 import difflib
 import cv2
 import numpy as np
-import mss 
+import mss
 from utils import load_config, load_mapping, save_mapping, log_message
 
 class VoiceEngine:
@@ -31,6 +31,7 @@ class VoiceEngine:
     def is_new_text(self, new_text, old_text):
         if not new_text or len(new_text) < 15: return False
         if not old_text: return True
+        # Niedrigere Ratio bedeutet, dass der Text als "neu" betrachtet wird (weniger als 85% Übereinstimmung)
         ratio = difflib.SequenceMatcher(None, new_text, old_text).ratio()
         return ratio <= 0.85
 
@@ -55,6 +56,7 @@ class VoiceEngine:
                     lines = f.readlines()
                     if lines:
                         last = lines[-1].strip()
+                        # Vereinfachte Geschlechtsbestimmung
                         gender = "Female" if any(x in last.lower() for x in ["female", "frau", "she"]) else "Male"
                         return last, gender
         except: pass
@@ -65,21 +67,25 @@ class VoiceEngine:
             log_message("Keine Stimmen im Speicher. Versuche Laden...")
             self.fetch_voices()
             if not self.voices: 
+                # NOTFALL-Stimme, wenn keine API-Stimmen geladen werden konnten
                 return "21m00Tcm4TlvDq8ikWAM", "NOTFALL (Rachel)" 
 
         mapping = load_mapping()
         if npc_name in mapping:
             return mapping[npc_name], "Gedächtnis"
 
+        # 1. Match über Namen in ElevenLabs Stimmen
         for v in self.voices:
             if npc_name.lower() in v['name'].lower():
                 mapping[npc_name] = v['voice_id']
                 save_mapping(mapping)
                 return v['voice_id'], "Namens-Match"
 
+        # 2. Match über Geschlecht-Label, dann Hash-Auswahl
         filtered = [v for v in self.voices if npc_gender.lower() in v.get('labels', {}).get('gender', '').lower()]
-        if not filtered: filtered = self.voices
+        if not filtered: filtered = self.voices # Fallback auf alle Stimmen
         
+        # Deterministische Auswahl mittels Hash
         idx = int(hashlib.md5(npc_name.encode('utf-8')).hexdigest(), 16) % len(filtered)
         vid = filtered[idx]['voice_id']
         mapping[npc_name] = vid
@@ -112,6 +118,7 @@ class VoiceEngine:
 
         log_message(f"Generiere neu: '{name}' ({method})")
         try:
+            # ElevenLabs API-Call
             headers = {"xi-api-key": self.config.get("api_key", ""), "Content-Type": "application/json"}
             data = {"text": text, "model_id": "eleven_turbo_v2_5", "voice_settings": {"stability": 0.5}}
             resp = requests.post(f"https://api.elevenlabs.io/v1/text-to-speech/{vid}", headers=headers, json=data)
@@ -126,6 +133,7 @@ class VoiceEngine:
 
     def play_audio_file(self, filepath):
         try:
+            # Sicherstellen, dass der Mixer neu initialisiert wird, falls er beendet wurde
             pygame.mixer.quit()
             pygame.mixer.init()
             pygame.mixer.music.load(filepath)
@@ -139,10 +147,12 @@ class VoiceEngine:
         mon_idx = int(self.config.get("monitor_index", 1))
         try:
             with mss.mss() as sct:
+                # Prüfen, ob der Index gültig ist, andernfalls den ersten/Hauptmonitor verwenden (Index 1)
                 if mon_idx >= len(sct.monitors): mon_idx = 1
                 monitor = sct.monitors[mon_idx]
                 sct_img = sct.grab(monitor)
                 img = np.array(sct_img)
+                # mss gibt BGRA aus, konvertieren zu BGR für OpenCV
                 img = cv2.cvtColor(img, cv2.COLOR_BGRA2BGR)
                 return img
         except Exception as e:
@@ -150,16 +160,18 @@ class VoiceEngine:
             return None
 
     def crop_to_content(self, img):
+        """Trimmt schwarze/leere Ränder um das gefundene Textbild."""
+        # Konvertiere zu Graustufen und wende Rauschunterdrückung an
         gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-        
-        # Stärkere Rauschunterdrückung
         denoised = cv2.medianBlur(gray, 5) 
         
+        # Finde nicht-schwarze Pixel
         coords = cv2.findNonZero(denoised)
         if coords is not None:
+            # Berechne die Bounding Box
             x, y, w, h = cv2.boundingRect(coords)
             
-            # Padding
+            # Füge etwas Padding hinzu
             pad = 5
             h_img, w_img = img.shape[:2]
             
@@ -170,26 +182,25 @@ class VoiceEngine:
             
             return img[y:y+h, x:x+w]
         
-        return img
+        return img # Rückgabe des Originalbildes, wenn kein Inhalt gefunden wurde
 
     def auto_find_quest_text(self, img):
-        h_img, w_img = img.shape[:2]
+        # *** ANPASSUNG: Verwende das gesamte Bild (ROI = img) ***
+        roi = img
+        # Die vorherigen Margin-Berechnungen und die roi-Definition wurden entfernt,
+        # um den gesamten Bildschirm/Screenshot zu berücksichtigen.
         
-        margin_top = int(h_img * 0.10)
-        margin_bottom = int(h_img * 0.15)
-        margin_lr = int(w_img * 0.10)
-        
-        if h_img < 200 or w_img < 200: return img
+        if roi.shape[0] < 50 or roi.shape[1] < 50: return img
 
-        roi = img[margin_top:h_img-margin_bottom, margin_lr:w_img-margin_lr]
-        
-        # 1. Weiß-Maske (gegen Gelb)
+        # 1. Weiß-Maske (gegen Gelb, um weiße Dialogfelder zu finden)
         hsv = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
+        # Helle Farben (weiß bis hellgrau)
         lower_white = np.array([0, 0, 160]) 
         upper_white = np.array([180, 50, 255]) 
         mask = cv2.inRange(hsv, lower_white, upper_white)
         
-        # 2. Verschmelzen (KLEIN)
+        # 2. Verschmelzen (Dilatieren, um Textblöcke zu verbinden)
+        # Kernelgröße: Horizontal lang, vertikal kurz, um Textzeilen zu verbinden.
         kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (25, 5))
         dilated = cv2.dilate(mask, kernel, iterations=2)
         
@@ -202,21 +213,25 @@ class VoiceEngine:
         for cnt in contours:
             x, y, w, h = cv2.boundingRect(cnt)
             area = w * h
-            if area < 5000: continue
+            if area < 5000: continue # Ignoriere sehr kleine Konturen (Rauschen)
             
+            # Bevorzuge Konturen im linken/zentralen Bereich, da LotRO Dialoge dort sind
             center_x = x + (w / 2)
-            if center_x < (mid_x + roi_w * 0.1):
+            # Begrenze die Suche auf die linke Hälfte/Mitte des Bildes (ca. 60% von links)
+            if center_x < (mid_x + roi_w * 0.1): 
                 candidates.append((cnt, area))
         
-        if not candidates:
-            if contours:
-                best_cnt = max(contours, key=cv2.contourArea)
-            else:
-                return roi
-        else:
+        if not candidates and contours:
+            # Fallback: Wenn kein Kandidat die Center-Bedingung erfüllt, nimm die größte Kontur überhaupt
+            best_cnt = max(contours, key=cv2.contourArea)
+        elif candidates:
+            # Nimm den größten gültigen Kandidaten
             candidates.sort(key=lambda x: x[1], reverse=True)
             best_cnt = candidates[0][0]
+        else:
+            return roi # Rückgabe des gesamten Bildes, wenn keine Kontur gefunden wurde
 
+        # Schneide das Bild auf die beste Kontur zu
         rx, ry, rw, rh = cv2.boundingRect(best_cnt)
         pad = 5
         rx1 = max(0, rx - pad)
@@ -227,7 +242,7 @@ class VoiceEngine:
         cropped_roi = roi[ry1:ry2, rx1:rx2]
         cropped_mask = mask[ry1:ry2, rx1:rx2]
         
-        # 3. Maskieren
+        # 3. Maskieren: Wende die Weiß-Maske auf das zugeschnittene Bild an, um nur den weißen Textblock zu isolieren
         masked_image = cv2.bitwise_and(cropped_roi, cropped_roi, mask=cropped_mask)
         
         # 4. Auto-Trim (Schwarze Ränder weg)
@@ -247,14 +262,8 @@ class VoiceEngine:
             
             gray = cv2.cvtColor(optimized_img, cv2.COLOR_BGR2GRAY)
             
-            # FIX 1: Aggressivere Tesseract-Konfiguration für Umlaute und Serifen
-            # Wir fügen die Blacklist hinzu, um Tesseract zu zwingen, keine Sonderzeichen für i/n zu verwenden.
-            # Aber: Wir müssen die TESSDATA_PREFIX Umgebungsvariable korrekt setzen.
-            # Da wir das nicht können, nutzen wir den Tesseract Config String
-            
             # Konfiguration für bessere deutsche OCR
             config = r'--oem 3 --psm 6 -l deu+eng' 
-            # Die alten Fehlzeichen waren oft Ergebnis von Tesseract's Versuchen, die Serifen-Schrift zu lesen.
             
             raw_text = pytesseract.image_to_string(gray, config=config)
             
@@ -266,8 +275,16 @@ class VoiceEngine:
                 stripped = line.strip()
                 if not stripped: continue
                 
-                # Wenn Zeile mit ' oder " beginnt oder endet, oder Zeichen enthält
-                if stripped.startswith(('"', "'")) or stripped.endswith(('"', "'", ".", "!", "?")) or len(stripped) > 20:
+                # *** FILTER ANPASSUNG: Nur Sätze mit Anführungszeichen oder Satzzeichen ***
+                # Nur Sätze werden genommen, die:
+                # 1. Mit Anführungszeichen (") oder Apostroph (') beginnen oder enden.
+                # ODER
+                # 2. Mit einem Satzendezeichen (., !, ?) enden.
+                # UND länger als 20 Zeichen sind (um Rauschen zu ignorieren).
+                is_dialog_start_end = stripped.startswith(('"', "'")) or stripped.endswith(('"', "'"))
+                is_dialog_end_punc = stripped.endswith((".", "!", "?"))
+                
+                if (is_dialog_start_end or is_dialog_end_punc) or len(stripped) > 20:
                     cleaned_lines.append(stripped)
 
             # Zusammenfügen und Leerzeichen normalisieren
