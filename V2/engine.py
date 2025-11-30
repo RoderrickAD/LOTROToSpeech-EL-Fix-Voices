@@ -17,22 +17,18 @@ class VoiceEngine:
         self.voices = []
         pygame.mixer.init()
         
-        # Audio Cache Ordner erstellen
         self.cache_dir = os.path.join(os.getcwd(), "AudioCache")
         if not os.path.exists(self.cache_dir):
             os.makedirs(self.cache_dir)
         
-        # Tesseract Pfad setzen
         tess_path = self.config.get("tesseract_path", r"C:\Program Files\Tesseract-OCR\tesseract.exe")
         pytesseract.pytesseract.tesseract_cmd = tess_path
         
-        # WICHTIG: Wir initialisieren mss hier NICHT global,
-        # sondern lokal in der Screenshot-Funktion, um Thread-Fehler zu vermeiden.
+        # WICHTIG: Wir initialisieren mss hier NICHT global.
 
     def is_new_text(self, new_text, old_text):
         if not new_text or len(new_text) < 15: return False
         if not old_text: return True
-        # Wenn Text zu > 85% gleich ist, ignorieren
         ratio = difflib.SequenceMatcher(None, new_text, old_text).ratio()
         return ratio <= 0.85
 
@@ -127,47 +123,85 @@ class VoiceEngine:
         except: pass
 
     def get_monitor_screenshot(self):
-        """ Holt Bild vom gewählten Monitor (Thread-Safe Fix) """
+        """ Holt Bild vom gewählten Monitor (Thread-Safe) """
         mon_idx = int(self.config.get("monitor_index", 1))
         try:
-            # FIX: with mss.mss() erstellt eine neue Instanz pro Aufruf -> Thread Safe!
             with mss.mss() as sct:
                 if mon_idx >= len(sct.monitors): mon_idx = 1
                 monitor = sct.monitors[mon_idx]
-                
                 sct_img = sct.grab(monitor)
                 img = np.array(sct_img)
                 img = cv2.cvtColor(img, cv2.COLOR_BGRA2BGR)
-                
                 return img
         except Exception as e:
             log_message(f"Screenshot Fehler: {e}")
             return None
 
     def auto_find_quest_text(self, img):
+        """ NEU: Findet gezielt den HELLEN Textblock """
+        h_img, w_img = img.shape[:2]
         gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-        _, thresh = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
         
-        kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (25, 10))
-        dilated = cv2.dilate(thresh, kernel, iterations=1)
+        # 1. Helligkeits-Filter: Nur sehr helle Bereiche (Text) behalten
+        # Alles unter Helligkeit 200 wird schwarz, alles darüber weiß.
+        _, thresh = cv2.threshold(gray, 200, 255, cv2.THRESH_BINARY)
         
+        # 2. Morphologie: Textzeilen horizontal zu einem Block verbinden
+        # Ein sehr breiter Kernel (40x5) verbindet Zeilen gut.
+        kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (40, 5))
+        dilated = cv2.dilate(thresh, kernel, iterations=2)
+        
+        # 3. Konturen finden
         contours, _ = cv2.findContours(dilated, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         
         if not contours: return img
 
-        valid_cnts = [c for c in contours if cv2.contourArea(c) > 5000]
-        if not valid_cnts: return img
-
-        largest = max(valid_cnts, key=cv2.contourArea)
-        x, y, w, h = cv2.boundingRect(largest)
+        # 4. Den besten Kandidaten finden
+        best_cnt = None
+        max_area = 0
         
-        pad = 15
-        h_img, w_img = img.shape[:2]
-        x1, y1 = max(0, x-pad), max(0, y-pad)
-        x2, y2 = min(w_img, x+w+pad), min(h_img, y+h+pad)
+        for cnt in contours:
+            x, y, w, h = cv2.boundingRect(cnt)
+            area = w * h
+            
+            # Filter: Mindestgröße (keine kleinen Artefakte)
+            if area < 15000: continue 
+
+            # Filter: Form (Textblöcke sind meist breiter als hoch)
+            # Verhindert das Erkennen von vertikalen Leisten
+            if h > w * 2: continue
+
+            # Wir nehmen den größten Block, der die Kriterien erfüllt
+            if area > max_area:
+                max_area = area
+                best_cnt = cnt
+        
+        # Fallback, falls kein idealer Block gefunden wurde
+        if best_cnt is None:
+            # Nimm einfach den allergrößten, wenn er groß genug ist
+            largest = max(contours, key=cv2.contourArea)
+            if cv2.contourArea(largest) > 5000:
+                best_cnt = largest
+            else:
+                return img # Nichts brauchbares gefunden
+
+        # 5. Zuschneiden mit Padding
+        x, y, w, h = cv2.boundingRect(best_cnt)
+        pad_x = 15
+        pad_y = 10
+        
+        x1 = max(0, x - pad_x)
+        y1 = max(0, y - pad_y)
+        x2 = min(w_img, x + w + pad_x)
+        y2 = min(h_img, y + h + pad_y)
         
         cropped = img[y1:y2, x1:x2]
-        cv2.imwrite("last_detection_debug.png", cropped) 
+
+        # Debug-Bild erstellen: Zeigt das Rechteck auf dem Originalbild
+        debug_img = img.copy()
+        cv2.rectangle(debug_img, (x1, y1), (x2, y2), (0, 255, 0), 3)
+        cv2.imwrite("last_detection_debug.png", debug_img) 
+        
         return cropped
 
     def run_ocr(self):
@@ -178,8 +212,10 @@ class VoiceEngine:
             optimized_img = self.auto_find_quest_text(img)
             
             gray = cv2.cvtColor(optimized_img, cv2.COLOR_BGR2GRAY)
+            # Für OCR nutzen wir wieder Otsu, da der Crop jetzt sauber sein sollte
             _, thresh = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
             
+            # psm 6 = Ein einzelner Textblock
             config = r'--oem 3 --psm 6'
             text = pytesseract.image_to_string(thresh, config=config, lang='eng+deu')
             
