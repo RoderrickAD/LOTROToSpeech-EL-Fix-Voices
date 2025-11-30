@@ -161,7 +161,7 @@ class VoiceEngine:
         upper_white = np.array([180, 50, 255]) 
         mask = cv2.inRange(hsv, lower_white, upper_white)
         
-        # 3. Verschmelzen
+        # 3. Verschmelzen (Kleiner Kernel trennt Spalten!)
         kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (25, 5))
         dilated = cv2.dilate(mask, kernel, iterations=2)
         
@@ -182,8 +182,6 @@ class VoiceEngine:
             center_x = x + (w / 2)
             
             # Ist der Block überwiegend auf der linken Seite?
-            # Wir erlauben, dass er leicht über die Mitte ragt (z.B. langer Text),
-            # aber der Schwerpunkt sollte links sein.
             if center_x < (mid_x + roi_w * 0.1):
                 candidates.append((cnt, area))
         
