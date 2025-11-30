@@ -8,9 +8,9 @@ import re
 import difflib
 import cv2
 import numpy as np
-import threading # Neu: Für asynchrone Audioausgabe
-import shutil # Neu: Für Cache-Bereinigung
-from requests.exceptions import RequestException # Neu: Für spezifische Fehlerbehandlung
+import threading
+import shutil
+from requests.exceptions import RequestException
 from utils import load_config, load_mapping, save_mapping, log_message
 
 # Konstante für die maximale Cache-Größe in Bytes (z.B. 1 GB)
@@ -22,7 +22,6 @@ class VoiceEngine:
         self.voices = []
         
         try:
-            # Versuch, den Mixer zu initialisieren
             pygame.mixer.init()
         except Exception as e:
             log_message(f"Audio Init Fehler: {e}")
@@ -31,14 +30,43 @@ class VoiceEngine:
         if not os.path.exists(self.cache_dir):
             os.makedirs(self.cache_dir)
         
-        # Cache bei Initialisierung aufräumen
         self._clean_cache() 
         
         tess_path = self.config.get("tesseract_path", r"C:\Program Files\Tesseract-OCR\tesseract.exe")
         pytesseract.pytesseract.tesseract_cmd = tess_path
+
+        # *** NEU: Lade Templates bei Initialisierung ***
+        self.templates = self._load_templates()
         
+    def _load_templates(self):
+        """Lädt die Template-Bilder aus dem 'templates'-Ordner."""
+        template_dir = os.path.join(os.getcwd(), "templates")
+        templates = {}
+        template_names = {
+            "top_left": "top_left.png",
+            "top_right": "top_right.png",
+            "bottom_right": "bottom_right.png",
+            "bottom_left": "bottom_left.png"
+        }
+
+        for key, filename in template_names.items():
+            filepath = os.path.join(template_dir, filename)
+            if os.path.exists(filepath):
+                templates[key] = cv2.imread(filepath, cv2.IMREAD_COLOR)
+                if templates[key] is None:
+                    log_message(f"WARNUNG: Konnte Template '{filepath}' nicht laden. Möglicherweise beschädigt.")
+            else:
+                log_message(f"FEHLER: Template '{filepath}' nicht gefunden. Template Matching wird nicht funktionieren.")
+                return None # Wenn ein Template fehlt, ist das Feature unbrauchbar
+
+        if len(templates) == len(template_names):
+            log_message(f"{len(templates)} Templates erfolgreich geladen.")
+            return templates
+        else:
+            log_message("FEHLER: Nicht alle Templates konnten geladen werden. Template Matching deaktiviert.")
+            return None
+
     def _clean_cache(self):
-        """Löscht die ältesten Dateien, wenn der Cache die MAX_CACHE_SIZE überschreitet."""
         total_size = 0
         file_details = []
         
@@ -48,12 +76,11 @@ class VoiceEngine:
                 if os.path.exists(filepath):
                     stat = os.stat(filepath)
                     total_size += stat.st_size
-                    file_details.append((filepath, stat.st_mtime)) # st_mtime: Zeit der letzten Änderung
+                    file_details.append((filepath, stat.st_mtime))
 
-        # Wenn die Gesamtgröße die Grenze überschreitet, Dateien nach Alter sortieren
         if total_size > MAX_CACHE_SIZE_BYTES:
             log_message(f"Cache-Größe ({total_size // (1024*1024)} MB) überschreitet Limit. Bereinige...")
-            file_details.sort(key=lambda x: x[1]) # Sortiert nach ältester zuerst
+            file_details.sort(key=lambda x: x[1])
 
             for filepath, _ in file_details:
                 if total_size <= MAX_CACHE_SIZE_BYTES:
@@ -67,7 +94,7 @@ class VoiceEngine:
                 except Exception as e:
                     log_message(f"Fehler beim Löschen von {filepath}: {e}")
 
-    # --- Ursprüngliche Methoden (unverändert) ---
+    # --- Ursprüngliche Methoden (teilweise unverändert) ---
 
     def is_new_text(self, new_text, old_text):
         if not new_text or len(new_text) < 15: return False
@@ -116,9 +143,6 @@ class VoiceEngine:
         if npc_name in mapping:
             return mapping[npc_name], "Gedächtnis"
 
-        # *** Verbessert: Unzuverlässiges Namens-Matching mit ElevenLabs-Stimmen entfernt ***
-        # Fällt direkt auf Geschlechts-Hashback
-        
         filtered = [v for v in self.voices if npc_gender.lower() in v.get('labels', {}).get('gender', '').lower()]
         if not filtered: filtered = self.voices
         
@@ -137,7 +161,6 @@ class VoiceEngine:
 
         if os.path.exists(cache_file):
             log_message("Spiele aus Cache...")
-            # *** Änderung: Asynchrone Wiedergabe ***
             threading.Thread(target=self._play_audio_thread, args=(cache_file,)).start()
             return
 
@@ -155,7 +178,6 @@ class VoiceEngine:
 
         log_message(f"Generiere neu: '{name}' ({method})")
         try:
-            # *** Verbesserung: Similarity Boost in Voice Settings hinzugefügt und anpassbar gemacht ***
             voice_settings = self.config.get("voice_settings", {"stability": 0.5, "similarity_boost": 0.75})
             
             headers = {"xi-api-key": self.config.get("api_key", ""), "Content-Type": "application/json"}
@@ -165,10 +187,8 @@ class VoiceEngine:
             
             if resp.status_code == 200:
                 with open(cache_file, "wb") as f: f.write(resp.content)
-                # *** Änderung: Asynchrone Wiedergabe ***
                 threading.Thread(target=self._play_audio_thread, args=(cache_file,)).start()
             else:
-                # *** Verbesserung: Detaillierte API-Fehlermeldung ***
                 error_detail = resp.json().get('detail', 'Keine Details verfügbar.') if 'application/json' in resp.headers.get('Content-Type', '') else resp.text
                 log_message(f"API Fehler ({resp.status_code}): {error_detail}")
         except RequestException as e:
@@ -177,20 +197,16 @@ class VoiceEngine:
             log_message(f"TTS Fehler: {e}")
             
     def _play_audio_thread(self, filepath):
-        """Spielt die Audiodatei im Hintergrund ab (hilft bei nicht-blockierendem Code)."""
         try:
-            # Muss immer wieder initialisiert werden, da quit() unten aufgerufen wird
             if not pygame.mixer.get_init():
                  pygame.mixer.init()
                  
             pygame.mixer.music.load(filepath)
             pygame.mixer.music.play()
             
-            # Die Hauptschleife wartet jetzt *im Thread*
             while pygame.mixer.music.get_busy():
                 time.sleep(0.1)
                 
-            # Entlädt und beendet den Mixer, um Ressourcen freizugeben
             pygame.mixer.music.unload()
             pygame.mixer.quit()
 
@@ -198,12 +214,9 @@ class VoiceEngine:
             log_message(f"Fehler beim Abspielen: {e}")
 
     def play_audio_file(self, filepath):
-        """Öffentliche Schnittstelle für die Wiedergabe, startet den Thread."""
-        # *** Änderung: Startet die Wiedergabe asynchron ***
         threading.Thread(target=self._play_audio_thread, args=(filepath,)).start()
         
     def get_monitor_screenshot(self):
-        # ... (unverändert)
         mon_idx = int(self.config.get("monitor_index", 1))
         try:
             with mss.mss() as sct:
@@ -218,7 +231,6 @@ class VoiceEngine:
             return None
 
     def crop_to_content(self, img):
-        # ... (unverändert)
         gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
         denoised = cv2.medianBlur(gray, 5) 
         
@@ -239,6 +251,115 @@ class VoiceEngine:
         return img
 
     def auto_find_quest_text(self, img):
+        if self.templates is None:
+            log_message("Template Matching nicht verfügbar, Templates fehlen. Fallback auf frühere Methode.")
+            return self._fallback_auto_find_quest_text(img)
+
+        gray_screenshot = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+        
+        found_positions = {}
+        threshold = 0.85 # Übereinstimmungsschwelle (0.8 = 80% Match)
+
+        for key, template_img in self.templates.items():
+            if template_img is None: continue # Sicherstellen, dass Template geladen wurde
+            
+            # Konvertiere Template zu Graustufen, falls noch nicht geschehen
+            gray_template = cv2.cvtColor(template_img, cv2.COLOR_BGR2GRAY)
+            
+            # Führe Template Matching durch
+            res = cv2.matchTemplate(gray_screenshot, gray_template, cv2.TM_CCOEFF_NORMED)
+            min_val, max_val, min_loc, max_loc = cv2.minMaxLoc(res)
+
+            if max_val >= threshold:
+                found_positions[key] = max_loc # top-left corner of the matched region
+            else:
+                log_message(f"WARNUNG: Template '{key}' wurde nicht mit ausreichender Genauigkeit ({max_val:.2f}) gefunden.")
+                # Wenn ein kritisches Template fehlt, können wir nicht fortfahren
+                return self._fallback_auto_find_quest_text(img) 
+
+        # Wenn nicht alle vier Ecken gefunden wurden, Fallback
+        if len(found_positions) < 4:
+            log_message("WARNUNG: Nicht alle vier Ecken-Templates gefunden. Fallback auf frühere Methode.")
+            return self._fallback_auto_find_quest_text(img)
+
+        # Ermittle die Koordinaten des Dialogfensters
+        # top_left_x, top_left_y
+        tl_x, tl_y = found_positions["top_left"]
+        # bottom_right_x, bottom_right_y (Hinzugerechnet um die Breite/Höhe des Templates)
+        br_x, br_y = found_positions["bottom_right"]
+        br_x += self.templates["bottom_right"].shape[1] 
+        br_y += self.templates["bottom_right"].shape[0]
+
+        # Stellen Sie sicher, dass die Koordinaten sinnvoll sind
+        # (tl sollte links-oben, br rechts-unten sein)
+        # Manchmal kann die Erkennung leicht variieren, hier wird der kleinste X/Y für TL und größte X/Y für BR genommen
+        final_x1 = min(found_positions["top_left"][0], found_positions["bottom_left"][0])
+        final_y1 = min(found_positions["top_left"][1], found_positions["top_right"][1])
+        final_x2 = max(found_positions["top_right"][0] + self.templates["top_right"].shape[1], 
+                       found_positions["bottom_right"][0] + self.templates["bottom_right"].shape[1])
+        final_y2 = max(found_positions["bottom_left"][1] + self.templates["bottom_left"].shape[0], 
+                       found_positions["bottom_right"][1] + self.templates["bottom_right"].shape[0])
+        
+        # Ein kleines Padding um den gefundenen Dialograhmen hinzufügen
+        padding = 10
+        final_x1 = max(0, final_x1 - padding)
+        final_y1 = max(0, final_y1 - padding)
+        final_x2 = min(img.shape[1], final_x2 + padding)
+        final_y2 = min(img.shape[0], final_y2 + padding)
+
+        # Schneide das Bild auf den gefundenen Dialograhmen zu
+        dialog_region = img[final_y1:final_y2, final_x1:final_x2]
+
+        if dialog_region.shape[0] < 50 or dialog_region.shape[1] < 50:
+            log_message("WARNUNG: Gefundener Dialogbereich ist zu klein. Fallback auf frühere Methode.")
+            return self._fallback_auto_find_quest_text(img)
+        
+        log_message(f"Dialograhmen mittels Template Matching gefunden: ({final_x1}, {final_y1}) bis ({final_x2}, {final_y2})")
+
+        # Führe die Text-Erkennung (Weiß-Maske, Binarisierung etc.) auf diesem Bereich aus
+        # Der Rest der Logik kann ähnlich bleiben, aber auf 'dialog_region' angewendet werden.
+
+        hsv = cv2.cvtColor(dialog_region, cv2.COLOR_BGR2HSV)
+        lower_white = np.array([0, 0, 160]) 
+        upper_white = np.array([180, 50, 255]) 
+        mask = cv2.inRange(hsv, lower_white, upper_white)
+        
+        kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (25, 5))
+        dilated = cv2.dilate(mask, kernel, iterations=2)
+        
+        contours, _ = cv2.findContours(dilated, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        
+        if not contours:
+            return dialog_region
+        
+        valid_contours = [c for c in contours if cv2.contourArea(c) > 5000]
+        if not valid_contours:
+            return dialog_region
+            
+        best_cnt = max(valid_contours, key=cv2.contourArea)
+
+        rx, ry, rw, rh = cv2.boundingRect(best_cnt)
+        pad = 5
+        rx1 = max(0, rx - pad)
+        ry1 = max(0, ry - pad)
+        rx2 = min(dialog_region.shape[1], rx + rw + pad)
+        ry2 = min(dialog_region.shape[0], ry + rh + pad)
+        
+        cropped_roi = dialog_region[ry1:ry2, rx1:rx2]
+        cropped_mask = mask[ry1:ry2, rx1:rx2]
+        
+        masked_image = cv2.bitwise_and(cropped_roi, cropped_roi, mask=cropped_mask)
+        
+        final_image = self.crop_to_content(masked_image)
+        
+        cv2.imwrite("last_detection_debug.png", final_image)
+        
+        return final_image
+
+    # *** NEU: Fallback-Methode, falls Template Matching fehlschlägt ***
+    def _fallback_auto_find_quest_text(self, img):
+        """Die ursprüngliche Methode zur Erkennung des Quest-Textes, als Fallback."""
+        log_message("Führe Fallback-Text-Erkennung aus.")
         h_img, w_img = img.shape[:2]
         
         if h_img < 50 or w_img < 50: return img
@@ -257,13 +378,11 @@ class VoiceEngine:
         if potential_dialog_area.shape[0] < 50 or potential_dialog_area.shape[1] < 50:
             potential_dialog_area = img
 
-        # 1. Weiß-Maske (gegen Gelb, um weiße Dialogfelder zu finden)
         hsv = cv2.cvtColor(potential_dialog_area, cv2.COLOR_BGR2HSV)
         lower_white = np.array([0, 0, 160]) 
         upper_white = np.array([180, 50, 255]) 
         mask = cv2.inRange(hsv, lower_white, upper_white)
         
-        # 2. Verschmelzen (Dilatieren, um Textblöcke zu verbinden)
         kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (25, 5))
         dilated = cv2.dilate(mask, kernel, iterations=2)
         
@@ -272,14 +391,12 @@ class VoiceEngine:
         if not contours:
             return potential_dialog_area
         
-        # *** Verbesserung: Filtere Konturen nach Größe, um Rauschen zu vermeiden ***
         valid_contours = [c for c in contours if cv2.contourArea(c) > 5000]
         if not valid_contours:
             return potential_dialog_area
             
         best_cnt = max(valid_contours, key=cv2.contourArea)
 
-        # Schneide die potential_dialog_area auf die beste Kontur zu
         rx, ry, rw, rh = cv2.boundingRect(best_cnt)
         pad = 5
         rx1 = max(0, rx - pad)
@@ -290,13 +407,11 @@ class VoiceEngine:
         cropped_roi = potential_dialog_area[ry1:ry2, rx1:rx2]
         cropped_mask = mask[ry1:ry2, rx1:rx2]
         
-        # 3. Maskieren: Wende die Weiß-Maske auf das zugeschnittene Bild an
         masked_image = cv2.bitwise_and(cropped_roi, cropped_roi, mask=cropped_mask)
         
-        # 4. Auto-Trim (Schwarze Ränder weg)
         final_image = self.crop_to_content(masked_image)
         
-        cv2.imwrite("last_detection_debug.png", final_image)
+        cv2.imwrite("last_detection_debug_fallback.png", final_image) # Debug-Bild für Fallback
         
         return final_image
 
@@ -307,14 +422,11 @@ class VoiceEngine:
 
             optimized_img = self.auto_find_quest_text(img)
             
-            # *** Verbesserung: Zusätzliche Bildvorverarbeitung (Binarisierung) ***
             gray = cv2.cvtColor(optimized_img, cv2.COLOR_BGR2GRAY)
-            # Feste Binarisierung, um Text zu maximieren (Text ist weiß)
             _, binarized = cv2.threshold(gray, 200, 255, cv2.THRESH_BINARY) 
             
             config = r'--oem 3 --psm 6 -l deu+eng' 
             
-            # *** Verbesserung: OCR auf binarisiertem Bild ausführen ***
             raw_text = pytesseract.image_to_string(binarized, config=config)
             
             lines = raw_text.split('\n')
@@ -327,7 +439,6 @@ class VoiceEngine:
                 is_dialog_start_end = stripped.startswith(('"', "'")) or stripped.endswith(('"', "'"))
                 is_dialog_end_punc = stripped.endswith((".", "!", "?"))
                 
-                # Behält nur Sätze mit Dialogmarkern oder sehr lange Sätze bei (wie gewünscht)
                 if (is_dialog_start_end or is_dialog_end_punc) or len(stripped) > 20:
                     cleaned_lines.append(stripped)
 
