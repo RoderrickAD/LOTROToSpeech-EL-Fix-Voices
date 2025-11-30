@@ -25,9 +25,6 @@ class VoiceEngine:
         # Tesseract Pfad setzen
         tess_path = self.config.get("tesseract_path", r"C:\Program Files\Tesseract-OCR\tesseract.exe")
         pytesseract.pytesseract.tesseract_cmd = tess_path
-        
-        # WICHTIG: KEIN globales self.sct = mss.mss() hier!
-        # Wir erstellen es frisch in jedem Thread, um Abstürze zu vermeiden.
 
     def is_new_text(self, new_text, old_text):
         if not new_text or len(new_text) < 15: return False
@@ -126,18 +123,14 @@ class VoiceEngine:
         except: pass
 
     def get_monitor_screenshot(self):
-        """ Holt Bild vom gewählten Monitor via mss (Thread-Safe Fix) """
         mon_idx = int(self.config.get("monitor_index", 1))
         try:
-            # FIX: Wir nutzen 'with mss.mss()', damit es in jedem Thread frisch ist
             with mss.mss() as sct:
                 if mon_idx >= len(sct.monitors): mon_idx = 1
                 monitor = sct.monitors[mon_idx]
-                
                 sct_img = sct.grab(monitor)
                 img = np.array(sct_img)
                 img = cv2.cvtColor(img, cv2.COLOR_BGRA2BGR)
-                
                 return img
         except Exception as e:
             log_message(f"Screenshot Fehler: {e}")
@@ -145,30 +138,34 @@ class VoiceEngine:
 
     def auto_find_quest_text(self, img):
         """ 
-        Strategie: Ignoriere Ränder (Skillbar unten, Menü oben), 
-        suche nur im sicheren Zentrum nach Text.
+        Findet Textblöcke, ignoriert dabei Farben (Gelb) und UI-Ränder.
         """
         h_img, w_img = img.shape[:2]
         
-        # 1. RÄNDER DEFINIEREN (Die "Scheuklappen")
-        # Wir ignorieren pauschal 10-15% vom Rand
-        margin_top = int(h_img * 0.10)    # Oben: 10% weg
-        margin_bottom = int(h_img * 0.15) # Unten: 15% weg (Skillbar!)
-        margin_lr = int(w_img * 0.10)     # Links/Rechts: 10% weg
+        # 1. Sicherer Bereich (ROI) - Ränder ignorieren
+        margin_top = int(h_img * 0.10)
+        margin_bottom = int(h_img * 0.15)
+        margin_lr = int(w_img * 0.10)
         
-        # Sicherheitscheck, falls Bild zu klein
         if h_img < 200 or w_img < 200: return img
 
-        # 2. ROI (Region of Interest) ausschneiden
-        # Wir arbeiten jetzt nur noch mit diesem Ausschnitt
         roi = img[margin_top:h_img-margin_bottom, margin_lr:w_img-margin_lr]
         
-        # 3. Textsuche im ROI
-        gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
-        _, thresh = cv2.threshold(gray, 200, 255, cv2.THRESH_BINARY)
+        # 2. FARB-FILTER (HSV) - Das ist der Trick gegen Gelb!
+        hsv = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
         
-        kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (30, 5))
-        dilated = cv2.dilate(thresh, kernel, iterations=2)
+        # Wir definieren "Weiß":
+        # Sättigung (Saturation): 0 bis 60 (Sehr niedrig -> keine Farbe)
+        # Helligkeit (Value): 150 bis 255 (Sehr hell)
+        lower_white = np.array([0, 0, 150])
+        upper_white = np.array([180, 60, 255])
+        
+        # Maske erstellen: Alles was NICHT weiß ist (Gelb, Blau etc.), wird schwarz
+        mask = cv2.inRange(hsv, lower_white, upper_white)
+        
+        # 3. Morphologie: Weiße Pixel zu Blöcken verbinden
+        kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (35, 5))
+        dilated = cv2.dilate(mask, kernel, iterations=2)
         
         contours, _ = cv2.findContours(dilated, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         
@@ -179,21 +176,18 @@ class VoiceEngine:
             x, y, w, h = cv2.boundingRect(cnt)
             area = w * h
             
-            if area < 10000: continue # Zu klein
-            if h > w * 2: continue # Zu hoch (wahrscheinlich keine Textbox)
+            if area < 10000: continue
+            if h > w * 3: continue # Zu schmal/hoch
 
             if area > max_area:
                 max_area = area
                 best_cnt = cnt
         
-        # Fallback: Wenn im Zentrum nichts ist, geben wir den ganzen ROI zurück
         if best_cnt is None:
-            # Debug speichern
-            cv2.imwrite("last_detection_debug.png", roi)
+            # Fallback
             return roi
 
-        # 4. Koordinaten zurückrechnen auf das Originalbild
-        # Wir haben im ROI gefunden (rx, ry), müssen aber Offset addieren
+        # 4. Koordinaten auf Originalbild umrechnen
         rx, ry, rw, rh = cv2.boundingRect(best_cnt)
         
         pad = 10
@@ -202,7 +196,6 @@ class VoiceEngine:
         final_w = rw + (pad*2)
         final_h = rh + (pad*2)
         
-        # Grenzen sichern
         x1 = max(0, final_x)
         y1 = max(0, final_y)
         x2 = min(w_img, final_x + final_w)
@@ -210,15 +203,17 @@ class VoiceEngine:
         
         cropped = img[y1:y2, x1:x2]
         
-        # Debug Bild mit Boxen
+        # Debug Bilder
         debug_full = img.copy()
-        # Zeige den Suchbereich (Blau)
+        # Zeige ROI (Blau)
         cv2.rectangle(debug_full, (margin_lr, margin_top), (w_img-margin_lr, h_img-margin_bottom), (255, 0, 0), 2)
-        # Zeige den Fund (Grün)
+        # Zeige Fund (Grün)
         cv2.rectangle(debug_full, (x1, y1), (x2, y2), (0, 255, 0), 3)
         
         cv2.imwrite("last_detection_full_debug.png", debug_full)
         cv2.imwrite("last_detection_debug.png", cropped)
+        # Speichere auch die Maske, um zu sehen, ob der Filter funktioniert hat
+        cv2.imwrite("last_detection_mask_debug.png", mask)
         
         return cropped
 
@@ -229,8 +224,8 @@ class VoiceEngine:
 
             optimized_img = self.auto_find_quest_text(img)
             
+            # OCR auf das gefilterte Bild
             gray = cv2.cvtColor(optimized_img, cv2.COLOR_BGR2GRAY)
-            # Otsu für OCR
             _, thresh = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
             
             config = r'--oem 3 --psm 6'
