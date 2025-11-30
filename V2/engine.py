@@ -16,13 +16,13 @@ class VoiceEngine:
         self.config = load_config()
         self.voices = []
         
-        # Audio Init verbessert
+        # Audio Init
         try:
             pygame.mixer.init()
         except Exception as e:
             log_message(f"Audio Init Fehler: {e}")
         
-        # Audio Cache Ordner
+        # Audio Cache
         self.cache_dir = os.path.join(os.getcwd(), "AudioCache")
         if not os.path.exists(self.cache_dir):
             os.makedirs(self.cache_dir)
@@ -37,8 +37,12 @@ class VoiceEngine:
         return ratio <= 0.85
 
     def fetch_voices(self):
+        """ Lädt Stimmen (blockierend, wenn nötig) """
         api_key = self.config.get("api_key", "").strip()
-        if not api_key: return []
+        if not api_key: 
+            log_message("API Key fehlt!")
+            return []
+            
         try:
             headers = {"xi-api-key": api_key}
             resp = requests.get("https://api.elevenlabs.io/v1/voices", headers=headers)
@@ -46,7 +50,10 @@ class VoiceEngine:
                 self.voices = resp.json().get('voices', [])
                 log_message(f"{len(self.voices)} Stimmen geladen.")
                 return self.voices
-        except: pass
+            else:
+                log_message(f"API Fehler beim Laden: {resp.text}")
+        except Exception as e:
+            log_message(f"Verbindungsfehler: {e}")
         return []
 
     def get_npc_from_log(self):
@@ -63,19 +70,26 @@ class VoiceEngine:
         return "Unknown", "Unknown"
 
     def select_voice(self, npc_name, npc_gender):
+        # NOTFALL-FIX: Wenn keine Stimmen da sind, lade sie JETZT!
+        if not self.voices:
+            log_message("Keine Stimmen im Speicher. Versuche Laden...")
+            self.fetch_voices()
+            if not self.voices:
+                return None, "Fehler: Laden fehlgeschlagen"
+
         mapping = load_mapping()
         if npc_name in mapping:
-            if not self.voices or mapping[npc_name] in [v['voice_id'] for v in self.voices]:
-                return mapping[npc_name], "Gedächtnis"
+            # Validierung überspringen, wir vertrauen dem Mapping
+            return mapping[npc_name], "Gedächtnis"
 
-        if not self.voices: return None, "Keine Stimmen"
-
+        # Namens-Match
         for v in self.voices:
             if npc_name.lower() in v['name'].lower():
                 mapping[npc_name] = v['voice_id']
                 save_mapping(mapping)
                 return v['voice_id'], "Namens-Match"
 
+        # Hash
         filtered = [v for v in self.voices if npc_gender.lower() in v.get('labels', {}).get('gender', '').lower()]
         if not filtered: filtered = self.voices
         
@@ -99,10 +113,12 @@ class VoiceEngine:
 
         npc_log, gender = self.get_npc_from_log()
         name = npc_log if npc_log != "Unknown" else npc_name_fallback
+        
+        # Voice Selection mit Auto-Fetch
         vid, method = self.select_voice(name, gender)
         
         if not vid: 
-            log_message("Audio Abbruch: Keine Stimme gewählt.")
+            log_message("ABBRUCH: Konnte keine Stimme zuweisen.")
             return
 
         log_message(f"Generiere neu: '{name}' ({method})")
@@ -120,19 +136,13 @@ class VoiceEngine:
             log_message(f"TTS Fehler: {e}")
 
     def play_audio_file(self, filepath):
-        """ Robuste Abspiel-Funktion """
         try:
-            # Mixer neu initialisieren, falls er hängt
             pygame.mixer.quit()
             pygame.mixer.init()
-            
             pygame.mixer.music.load(filepath)
             pygame.mixer.music.play()
-            
-            # Warte solange Musik spielt, aber erlaube Abbruch
             while pygame.mixer.music.get_busy():
                 time.sleep(0.1)
-                
         except Exception as e:
             log_message(f"Fehler beim Abspielen: {e}")
 
@@ -151,30 +161,40 @@ class VoiceEngine:
             return None
 
     def crop_to_content(self, img):
-        """ Schneidet alle schwarzen Ränder weg """
+        """ 
+        Intelligenter Zuschnitt: Sucht den Text-Block und entfernt Rauschen.
+        """
         gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-        # Finde alle Pixel, die NICHT schwarz sind
-        coords = cv2.findNonZero(gray)
         
-        if coords is not None:
-            x, y, w, h = cv2.boundingRect(coords)
-            # Kleines Padding lassen, damit Text nicht am Rand klebt
-            pad = 10
-            h_img, w_img = img.shape[:2]
-            
-            x = max(0, x - pad)
-            y = max(0, y - pad)
-            w = min(w_img - x, w + 2*pad)
-            h = min(h_img - y, h + 2*pad)
-            
-            return img[y:y+h, x:x+w]
+        # Morphologie zum Verbinden (damit kleine Lücken nicht stören)
+        kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (10, 10))
+        dilated = cv2.dilate(gray, kernel, iterations=1)
         
-        return img
+        # Konturen auf dem maskierten Bild suchen
+        contours, _ = cv2.findContours(dilated, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        
+        if not contours: return img
+
+        # Nimm die größte Kontur (das ist der Textblock)
+        # Kleine weiße Punkte am Rand werden so ignoriert!
+        largest = max(contours, key=cv2.contourArea)
+        
+        x, y, w, h = cv2.boundingRect(largest)
+        
+        # Padding
+        pad = 10
+        h_img, w_img = img.shape[:2]
+        
+        x = max(0, x - pad)
+        y = max(0, y - pad)
+        w = min(w_img - x, w + 2*pad)
+        h = min(h_img - y, h + 2*pad)
+        
+        return img[y:y+h, x:x+w]
 
     def auto_find_quest_text(self, img):
         h_img, w_img = img.shape[:2]
         
-        # 1. Ränder ignorieren
         margin_top = int(h_img * 0.10)
         margin_bottom = int(h_img * 0.15)
         margin_lr = int(w_img * 0.10)
@@ -183,19 +203,18 @@ class VoiceEngine:
 
         roi = img[margin_top:h_img-margin_bottom, margin_lr:w_img-margin_lr]
         
-        # 2. Weiß-Maske
+        # HSV Filter
         hsv = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
         lower_white = np.array([0, 0, 160]) 
-        upper_white = np.array([180, 50, 255]) 
+        upper_white = np.array([180, 60, 255]) 
         mask = cv2.inRange(hsv, lower_white, upper_white)
         
-        # 3. Verschmelzen
+        # Verschmelzen
         kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (25, 5))
         dilated = cv2.dilate(mask, kernel, iterations=2)
         
         contours, _ = cv2.findContours(dilated, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         
-        # 4. Linken Block finden
         candidates = []
         roi_w = roi.shape[1]
         mid_x = roi_w / 2
@@ -210,16 +229,15 @@ class VoiceEngine:
                 candidates.append((cnt, area))
         
         if not candidates:
-            # Fallback auf größten Block
             if contours:
                 best_cnt = max(contours, key=cv2.contourArea)
             else:
-                return roi 
+                return roi
         else:
             candidates.sort(key=lambda x: x[1], reverse=True)
             best_cnt = candidates[0][0]
 
-        # 5. Zuschneiden (Grob)
+        # Grober Schnitt
         rx, ry, rw, rh = cv2.boundingRect(best_cnt)
         pad = 5
         rx1 = max(0, rx - pad)
@@ -230,10 +248,10 @@ class VoiceEngine:
         cropped_roi = roi[ry1:ry2, rx1:rx2]
         cropped_mask = mask[ry1:ry2, rx1:rx2]
         
-        # 6. Maskieren (Schwarz machen)
+        # Maskieren
         masked_image = cv2.bitwise_and(cropped_roi, cropped_roi, mask=cropped_mask)
         
-        # 7. NEU: Auto-Trim (Schwarze Ränder weg)
+        # 7. NEU: Verbesserter Auto-Trim
         final_image = self.crop_to_content(masked_image)
         
         # Debug
