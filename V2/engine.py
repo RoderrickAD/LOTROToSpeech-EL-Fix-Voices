@@ -15,7 +15,7 @@ import mss
 import mss.tools 
 from utils import load_config, load_mapping, save_mapping, log_message
 
-# Konstante für die maximale Cache-Größe in Bytes (z.B. 1 GB)
+# Konstante für die maximale Cache-Größe in Bytes (ca. 1 GB)
 MAX_CACHE_SIZE_BYTES = 1024 * 1024 * 1024 
 
 class VoiceEngine:
@@ -24,7 +24,6 @@ class VoiceEngine:
         self.voices = []
         
         try:
-            # Versuch, den Mixer zu initialisieren
             pygame.mixer.init()
         except Exception as e:
             log_message(f"Audio Init Fehler: {e}")
@@ -33,13 +32,12 @@ class VoiceEngine:
         if not os.path.exists(self.cache_dir):
             os.makedirs(self.cache_dir)
         
-        # Cache bei Initialisierung aufräumen
         self._clean_cache() 
         
         tess_path = self.config.get("tesseract_path", r"C:\Program Files\Tesseract-OCR\tesseract.exe")
         pytesseract.pytesseract.tesseract_cmd = tess_path
 
-        # Lade Templates bei Initialisierung
+        # Lade Templates für Template Matching
         self.templates = self._load_templates()
         
     def _load_templates(self):
@@ -56,10 +54,9 @@ class VoiceEngine:
         for key, filename in template_names.items():
             filepath = os.path.join(template_dir, filename)
             if os.path.exists(filepath):
-                # Laden ohne Farbkonvertierung, da wir später zu Graustufen konvertieren
                 templates[key] = cv2.imread(filepath, cv2.IMREAD_COLOR) 
                 if templates[key] is None:
-                    log_message(f"WARNUNG: Konnte Template '{filepath}' nicht laden. Möglicherweise beschädigt.")
+                    log_message(f"WARNUNG: Konnte Template '{filepath}' nicht laden.")
             else:
                 log_message(f"FEHLER: Template '{filepath}' nicht gefunden.")
                 return None 
@@ -147,7 +144,6 @@ class VoiceEngine:
         if npc_name in mapping:
             return mapping[npc_name], "Gedächtnis"
 
-        # Hash-basierte Zuweisung nach Geschlecht
         filtered = [v for v in self.voices if npc_gender.lower() in v.get('labels', {}).get('gender', '').lower()]
         if not filtered: filtered = self.voices
         
@@ -266,7 +262,7 @@ class VoiceEngine:
         gray_screenshot = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
         
         found_positions = {}
-        threshold = 0.80 # Auf 80% gesenkt für bessere Toleranz
+        threshold = 0.80 # Auf 80% für mehr Toleranz
 
         for key, template_img in self.templates.items():
             if template_img is None: continue
@@ -286,7 +282,7 @@ class VoiceEngine:
             log_message("WARNUNG: Nicht alle vier Ecken-Templates gefunden. Fallback.")
             return self._fallback_auto_find_quest_text(img)
 
-        # Ermittle die Koordinaten des Dialogfensters
+        # Ermittle die Koordinaten des Dialogfensters (Bounding Box)
         final_x1 = min(found_positions["top_left"][0], found_positions["bottom_left"][0])
         final_y1 = min(found_positions["top_left"][1], found_positions["top_right"][1])
         final_x2 = max(found_positions["top_right"][0] + self.templates["top_right"].shape[1], 
@@ -301,7 +297,6 @@ class VoiceEngine:
         final_x2 = min(img.shape[1], final_x2 + padding)
         final_y2 = min(img.shape[0], final_y2 + padding)
 
-        # Schneide das Bild auf den gefundenen Dialograhmen zu
         dialog_region = img[final_y1:final_y2, final_x1:final_x2]
         
         if dialog_region.shape[0] < 50 or dialog_region.shape[1] < 50:
@@ -310,22 +305,34 @@ class VoiceEngine:
         
         log_message(f"Dialograhmen mittels Template Matching gefunden: ({final_x1}, {final_y1}) bis ({final_x2}, {final_y2})")
 
-        # Nur Rauschunterdrückung und Graustufe, bevor OCR gestartet wird
+        # BILDVERARBEITUNG FÜR OPTIMIERTE OCR
         final_image_gray = cv2.cvtColor(dialog_region, cv2.COLOR_BGR2GRAY)
-        denoised = cv2.medianBlur(final_image_gray, 3) 
         
-        cv2.imwrite("last_detection_debug.png", denoised)
+        # 1. Kontrastverbesserung (CLAHE)
+        clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+        contrasted = clahe.apply(final_image_gray)
         
-        return denoised # Rückgabe des Graustufen-Bildes
+        # 2. Rauschunterdrückung
+        denoised = cv2.medianBlur(contrasted, 3) 
+        
+        # 3. Adaptive Binarisierung: Invertiert das Bild und wendet lokal optimierten Schwellenwert an
+        inverted = cv2.bitwise_not(denoised)
+        optimized_img = cv2.adaptiveThreshold(inverted, 255, 
+                                              cv2.ADAPTIVE_THRESH_GAUSSIAN_C, 
+                                              cv2.THRESH_BINARY, 11, 2)
+        
+        cv2.imwrite("last_detection_debug.png", optimized_img)
+        
+        return optimized_img # Rückgabe des binarisierten Bildes
 
     def _fallback_auto_find_quest_text(self, img):
         """Die ursprüngliche Methode zur Erkennung des Quest-Textes, als Fallback."""
         log_message("Führe Fallback-Text-Erkennung aus.")
         h_img, w_img = img.shape[:2]
         
-        if h_img < 50 or w_img < 50: return img
+        if h_img < 50 or w_img < 50: return cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
 
-        # Grobe Vor-Eingrenzung (basierend auf LotRO-UI-Layout)
+        # Grobe Vor-Eingrenzung (prozentual)
         crop_top = int(h_img * 0.12)  
         crop_bottom = int(h_img * 0.12)
         crop_left = int(w_img * 0.18) 
@@ -350,7 +357,7 @@ class VoiceEngine:
         contours, _ = cv2.findContours(dilated, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         
         if not contours:
-            return cv2.cvtColor(potential_dialog_area, cv2.COLOR_BGR2GRAY) # Graustufe zurückgeben
+            return cv2.cvtColor(potential_dialog_area, cv2.COLOR_BGR2GRAY)
         
         valid_contours = [c for c in contours if cv2.contourArea(c) > 5000]
         if not valid_contours:
@@ -380,15 +387,13 @@ class VoiceEngine:
         try:
             img = self.get_monitor_screenshot()
             if img is None: 
-                log_message("Screenshot ist None.")
                 return ""
 
-            # optimized_img ist ein Graustufenbild
+            # optimized_img ist ein binarisiertes oder Graustufenbild
             optimized_img = self.auto_find_quest_text(img)
             
             config = r'--oem 3 --psm 6 -l deu+eng' 
             
-            # OCR auf dem optimierten Graustufenbild ausführen
             raw_text = pytesseract.image_to_string(optimized_img, config=config)
             
             lines = raw_text.split('\n')
@@ -401,19 +406,16 @@ class VoiceEngine:
                 is_dialog_start_end = stripped.startswith(('"', "'")) or stripped.endswith(('"', "'"))
                 is_dialog_end_punc = stripped.endswith((".", "!", "?"))
                 
-                # Nur Sätze mit Dialogmarkern oder sehr lange Sätze werden genommen (wie gewünscht)
                 if (is_dialog_start_end or is_dialog_end_punc) or len(stripped) > 20:
                     cleaned_lines.append(stripped)
 
             clean_output = ' '.join(cleaned_lines)
             clean_output = re.sub(r'\s+', ' ', clean_output).strip()
             
-            # Post-Processing
             clean_output = re.sub(r'oo|Oo|oO|Solo|solo|NYZ B|„Aa 1', '', clean_output)
             clean_output = re.sub(r'‘', "'", clean_output)
             
             if len(clean_output) < 10:
-                # log_message(f"WARNUNG: OCR-Ergebnis zu kurz. Länge: {len(clean_output)}. Abbruch.")
                 return ""
             
             try:
