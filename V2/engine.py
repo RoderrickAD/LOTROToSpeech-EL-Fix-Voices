@@ -142,6 +142,43 @@ class VoiceEngine:
         except Exception as e:
             log_message(f"Audio Fehler: {e}")
 
+    def auto_crop_text_area(self, img_cv):
+        """ 
+        Findet automatisch den größten Textblock im Bild.
+        """
+        gray = cv2.cvtColor(img_cv, cv2.COLOR_RGB2GRAY)
+        _, thresh = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+        
+        # Text "fett" machen, um Zeilen zu verbinden
+        kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (20, 8)) 
+        dilated = cv2.dilate(thresh, kernel, iterations=1)
+        
+        contours, _ = cv2.findContours(dilated, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        
+        if not contours:
+            return img_cv
+
+        # Größten Block finden
+        largest_cnt = max(contours, key=cv2.contourArea)
+        x, y, w, h = cv2.boundingRect(largest_cnt)
+        
+        if w * h < 2000:
+            return img_cv
+
+        # Zuschneiden mit Padding
+        pad = 10
+        h_img, w_img, _ = img_cv.shape
+        x1 = max(0, x - pad)
+        y1 = max(0, y - pad)
+        x2 = min(w_img, x + w + pad)
+        y2 = min(h_img, y + h + pad)
+        
+        cropped = img_cv[y1:y2, x1:x2]
+        
+        # Debug Bilder speichern
+        cv2.imwrite("debug_auto_crop.png", cropped)
+        return cropped
+
     def run_ocr(self):
         coords = self.config.get("ocr_coords", [0, 0, 100, 100])
         try:
@@ -149,23 +186,19 @@ class VoiceEngine:
             if bbox[2] - bbox[0] < 10 or bbox[3] - bbox[1] < 10: 
                 return ""
 
-            # Bild aufnehmen und verbessern
             img_pil = ImageGrab.grab(bbox=bbox)
             img_np = np.array(img_pil)
-            gray = cv2.cvtColor(img_np, cv2.COLOR_RGB2GRAY)
             
-            # Thresholding (Schwarz/Weiß Filter)
+            # Auto-Crop aufrufen
+            optimized_img = self.auto_crop_text_area(img_np)
+            
+            # OCR auf optimiertes Bild
+            gray = cv2.cvtColor(optimized_img, cv2.COLOR_RGB2GRAY)
             _, thresh = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
             
-            # Speichere Debug-Bild
-            cv2.imwrite("debug_ocr_view.png", thresh)
-
-            # WICHTIG: PSM 6 zwingt Tesseract, alles als einen Block zu lesen (ignoriert Absätze)
             custom_config = r'--oem 3 --psm 6'
-            
             text = pytesseract.image_to_string(thresh, config=custom_config, lang='eng+deu')
             
-            # Zeilenumbrüche entfernen
             clean = re.sub(r'\s+', ' ', text).strip()
             
             if len(clean) < 15: 
