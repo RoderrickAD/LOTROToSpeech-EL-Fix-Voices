@@ -20,20 +20,16 @@ jobs:
       run: |
         python -m pip install --upgrade pip
         pip install pyinstaller
-        pip install requests pygame pytesseract Pillow keyboard opencv-python numpy
+        # WICHTIG: mss für Screenshots hinzugefügt
+        pip install requests pygame pytesseract Pillow keyboard opencv-python numpy mss
 
     - name: Build with PyInstaller
       run: |
-        # Wir wechseln zuerst in den Unterordner V2
         cd V2
-        
-        # Jetzt starten wir PyInstaller im V2-Ordner
-        # Die main.py liegt direkt hier im Ordner
         pyinstaller --noconsole --onedir --name "LOTRO_Voice_2" main.py
 
     - name: Upload Build Artifact
       uses: actions/upload-artifact@v4
       with:
         name: LOTRO_Voice_2_Windows
-        # WICHTIG: Da wir in V2 gebaut haben, liegt der Output auch in V2/dist
         path: V2/dist/LOTRO_Voice_2
