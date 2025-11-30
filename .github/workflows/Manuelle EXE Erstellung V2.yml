@@ -20,7 +20,7 @@ jobs:
       run: |
         python -m pip install --upgrade pip
         pip install pyinstaller
-        pip install requests pygame pytesseract Pillow
+        pip install requests pygame pytesseract Pillow keyboard
 
     - name: Build with PyInstaller
       run: |
