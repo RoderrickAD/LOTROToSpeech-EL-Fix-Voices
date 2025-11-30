@@ -256,13 +256,13 @@ class VoiceEngine:
 
     def auto_find_quest_text(self, img):
         if self.templates is None:
-            log_message("Template Matching nicht verfügbar, Templates fehlen. Fallback auf frühere Methode.")
+            log_message("Template Matching nicht verfügbar. Fallback auf frühere Methode.")
             return self._fallback_auto_find_quest_text(img)
 
         gray_screenshot = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
         
         found_positions = {}
-        threshold = 0.80 # Auf 80% für mehr Toleranz
+        threshold = 0.80
 
         for key, template_img in self.templates.items():
             if template_img is None: continue
@@ -305,7 +305,7 @@ class VoiceEngine:
         
         log_message(f"Dialograhmen mittels Template Matching gefunden: ({final_x1}, {final_y1}) bis ({final_x2}, {final_y2})")
 
-        # BILDVERARBEITUNG FÜR OPTIMIERTE OCR
+        # BILDVERARBEITUNG FÜR OPTIMIERTE OCR -> ERZEUGT SCHWARZ-WEISS BILD
         final_image_gray = cv2.cvtColor(dialog_region, cv2.COLOR_BGR2GRAY)
         
         # 1. Kontrastverbesserung (CLAHE)
@@ -315,7 +315,7 @@ class VoiceEngine:
         # 2. Rauschunterdrückung
         denoised = cv2.medianBlur(contrasted, 3) 
         
-        # 3. Adaptive Binarisierung: Invertiert das Bild und wendet lokal optimierten Schwellenwert an
+        # 3. Adaptive Binarisierung: Invertiert (Text wird Schwarz auf Weiß) und wendet lokalen Schwellenwert an
         inverted = cv2.bitwise_not(denoised)
         optimized_img = cv2.adaptiveThreshold(inverted, 255, 
                                               cv2.ADAPTIVE_THRESH_GAUSSIAN_C, 
@@ -323,7 +323,7 @@ class VoiceEngine:
         
         cv2.imwrite("last_detection_debug.png", optimized_img)
         
-        return optimized_img # Rückgabe des binarisierten Bildes
+        return optimized_img # Rückgabe des binarisierten (Schwarz-Weiß) Bildes
 
     def _fallback_auto_find_quest_text(self, img):
         """Die ursprüngliche Methode zur Erkennung des Quest-Textes, als Fallback."""
@@ -381,7 +381,10 @@ class VoiceEngine:
         
         cv2.imwrite("last_detection_debug_fallback.png", final_image)
         
-        return cv2.cvtColor(final_image, cv2.COLOR_BGR2GRAY) # Graustufe zurückgeben
+        # Füge einfache Bildverbesserung hinzu, um sicherzustellen, dass die OCR im Fallback eine Chance hat
+        gray_image = cv2.cvtColor(final_image, cv2.COLOR_BGR2GRAY)
+        denoised = cv2.medianBlur(gray_image, 3)
+        return denoised # Gibt Graustufenbild zurück
 
     def run_ocr(self):
         try:
@@ -389,11 +392,11 @@ class VoiceEngine:
             if img is None: 
                 return ""
 
-            # optimized_img ist ein binarisiertes oder Graustufenbild
             optimized_img = self.auto_find_quest_text(img)
             
             config = r'--oem 3 --psm 6 -l deu+eng' 
             
+            # OCR direkt auf dem optimierten, binarisierten Bild ausführen
             raw_text = pytesseract.image_to_string(optimized_img, config=config)
             
             lines = raw_text.split('\n')
