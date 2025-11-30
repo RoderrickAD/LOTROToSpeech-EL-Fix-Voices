@@ -17,6 +17,11 @@ class VoiceEngine:
         self.voices = []
         pygame.mixer.init()
         
+        # Audio Cache Ordner erstellen
+        self.cache_dir = os.path.join(os.getcwd(), "AudioCache")
+        if not os.path.exists(self.cache_dir):
+            os.makedirs(self.cache_dir)
+        
         # Tesseract Pfad setzen
         tess_path = self.config.get("tesseract_path", r"C:\Program Files\Tesseract-OCR\tesseract.exe")
         pytesseract.pytesseract.tesseract_cmd = tess_path
@@ -109,6 +114,23 @@ class VoiceEngine:
         return selected['voice_id'], "Berechnet"
 
     def generate_and_play(self, text, npc_name_fallback="Unknown"):
+        # 1. CACHE CHECK
+        text_hash = hashlib.md5(text.encode('utf-8')).hexdigest()
+        cache_filename = os.path.join(self.cache_dir, f"quest_{text_hash}.mp3")
+
+        if os.path.exists(cache_filename):
+            log_message("Spiele Audio aus Cache (Kostenlos!)")
+            try:
+                pygame.mixer.music.load(cache_filename)
+                pygame.mixer.music.play()
+                while pygame.mixer.music.get_busy():
+                    time.sleep(0.1)
+                pygame.mixer.music.unload()
+                return 
+            except Exception as e:
+                log_message(f"Cache Fehler: {e}")
+
+        # 2. NEU GENERIEREN
         npc_log, gender = self.get_npc_from_log()
         final_name = npc_log if npc_log != "Unknown" else npc_name_fallback
         voice_id, method = self.select_voice(final_name, gender)
@@ -117,8 +139,9 @@ class VoiceEngine:
             log_message("Keine Stimme gefunden.")
             return
 
-        log_message(f"Spreche: '{final_name}' ({method})")
+        log_message(f"Generiere neu: '{final_name}' ({method})")
         api_key = self.config.get("api_key", "").strip()
+        
         try:
             headers = {"xi-api-key": api_key, "Content-Type": "application/json"}
             data = {
@@ -129,10 +152,13 @@ class VoiceEngine:
             resp = requests.post(f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}", headers=headers, json=data)
             
             if resp.status_code == 200:
-                filename = os.path.join(os.getcwd(), "temp_audio.mp3")
-                with open(filename, "wb") as f:
+                # Speichern im Cache
+                with open(cache_filename, "wb") as f:
                     f.write(resp.content)
-                pygame.mixer.music.load(filename)
+                
+                log_message(f"Audio gespeichert: {cache_filename}")
+                
+                pygame.mixer.music.load(cache_filename)
                 pygame.mixer.music.play()
                 while pygame.mixer.music.get_busy():
                     time.sleep(0.1)
@@ -143,29 +169,25 @@ class VoiceEngine:
             log_message(f"Audio Fehler: {e}")
 
     def auto_crop_text_area(self, img_cv):
-        """ 
-        Findet automatisch den größten Textblock im Bild.
-        """
+        """ Findet den größten Textblock automatisch """
         gray = cv2.cvtColor(img_cv, cv2.COLOR_RGB2GRAY)
         _, thresh = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
         
-        # Text "fett" machen, um Zeilen zu verbinden
+        # Text verdicken
         kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (20, 8)) 
         dilated = cv2.dilate(thresh, kernel, iterations=1)
         
         contours, _ = cv2.findContours(dilated, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         
-        if not contours:
-            return img_cv
+        if not contours: return img_cv
 
-        # Größten Block finden
         largest_cnt = max(contours, key=cv2.contourArea)
         x, y, w, h = cv2.boundingRect(largest_cnt)
         
-        if w * h < 2000:
-            return img_cv
+        # Filter für winzige Flecken
+        if w * h < 2000: return img_cv
 
-        # Zuschneiden mit Padding
+        # Zuschneiden mit Rand
         pad = 10
         h_img, w_img, _ = img_cv.shape
         x1 = max(0, x - pad)
@@ -173,11 +195,7 @@ class VoiceEngine:
         x2 = min(w_img, x + w + pad)
         y2 = min(h_img, y + h + pad)
         
-        cropped = img_cv[y1:y2, x1:x2]
-        
-        # Debug Bilder speichern
-        cv2.imwrite("debug_auto_crop.png", cropped)
-        return cropped
+        return img_cv[y1:y2, x1:x2]
 
     def run_ocr(self):
         coords = self.config.get("ocr_coords", [0, 0, 100, 100])
@@ -189,10 +207,10 @@ class VoiceEngine:
             img_pil = ImageGrab.grab(bbox=bbox)
             img_np = np.array(img_pil)
             
-            # Auto-Crop aufrufen
+            # Auto-Crop anwenden
             optimized_img = self.auto_crop_text_area(img_np)
             
-            # OCR auf optimiertes Bild
+            # OCR auf das zugeschnittene Bild
             gray = cv2.cvtColor(optimized_img, cv2.COLOR_RGB2GRAY)
             _, thresh = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
             
