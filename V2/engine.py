@@ -26,13 +26,13 @@ class VoiceEngine:
         tess_path = self.config.get("tesseract_path", r"C:\Program Files\Tesseract-OCR\tesseract.exe")
         pytesseract.pytesseract.tesseract_cmd = tess_path
         
-        # MSS für Screenshots initialisieren
-        self.sct = mss.mss()
+        # WICHTIG: Wir initialisieren mss hier NICHT global,
+        # sondern lokal in der Screenshot-Funktion, um Thread-Fehler zu vermeiden.
 
     def is_new_text(self, new_text, old_text):
         if not new_text or len(new_text) < 15: return False
         if not old_text: return True
-        # Wenn Text zu > 85% gleich ist, ignorieren (verhindert Dopplung bei OCR-Fehlern)
+        # Wenn Text zu > 85% gleich ist, ignorieren
         ratio = difflib.SequenceMatcher(None, new_text, old_text).ratio()
         return ratio <= 0.85
 
@@ -57,7 +57,6 @@ class VoiceEngine:
                     lines = f.readlines()
                     if lines:
                         last = lines[-1].strip()
-                        # Simple Gender Erkennung im Namen
                         gender = "Female" if any(x in last.lower() for x in ["female", "frau", "she"]) else "Male"
                         return last, gender
         except: pass
@@ -65,21 +64,18 @@ class VoiceEngine:
 
     def select_voice(self, npc_name, npc_gender):
         mapping = load_mapping()
-        # Gedächtnis prüfen
         if npc_name in mapping:
             if not self.voices or mapping[npc_name] in [v['voice_id'] for v in self.voices]:
                 return mapping[npc_name], "Gedächtnis"
 
         if not self.voices: return None, "Keine Stimmen"
 
-        # Namens-Match
         for v in self.voices:
             if npc_name.lower() in v['name'].lower():
                 mapping[npc_name] = v['voice_id']
                 save_mapping(mapping)
                 return v['voice_id'], "Namens-Match"
 
-        # Hash Berechnung (Konsistenz)
         filtered = [v for v in self.voices if npc_gender.lower() in v.get('labels', {}).get('gender', '').lower()]
         if not filtered: filtered = self.voices
         
@@ -90,20 +86,17 @@ class VoiceEngine:
         return vid, "Berechnet"
 
     def generate_and_play(self, text, npc_name_fallback="Unknown"):
-        # Verzögerung anwenden
         delay = float(self.config.get("audio_delay", 0.5))
         if delay > 0: time.sleep(delay)
 
-        # Cache Check (Dateiname basierend auf Text-Hash)
         text_hash = hashlib.md5(text.encode('utf-8')).hexdigest()
         cache_file = os.path.join(self.cache_dir, f"quest_{text_hash}.mp3")
 
         if os.path.exists(cache_file):
-            log_message("Spiele aus Cache (Offline)...")
+            log_message("Spiele aus Cache...")
             self.play_audio_file(cache_file)
             return
 
-        # Neu generieren
         npc_log, gender = self.get_npc_from_log()
         name = npc_log if npc_log != "Unknown" else npc_name_fallback
         vid, method = self.select_voice(name, gender)
@@ -134,28 +127,27 @@ class VoiceEngine:
         except: pass
 
     def get_monitor_screenshot(self):
-        """ Holt Bild vom gewählten Monitor via mss """
+        """ Holt Bild vom gewählten Monitor (Thread-Safe Fix) """
         mon_idx = int(self.config.get("monitor_index", 1))
         try:
-            if mon_idx >= len(self.sct.monitors): mon_idx = 1
-            monitor = self.sct.monitors[mon_idx]
-            
-            sct_img = self.sct.grab(monitor)
-            img = np.array(sct_img)
-            # mss liefert BGRA, OpenCV braucht BGR
-            img = cv2.cvtColor(img, cv2.COLOR_BGRA2BGR)
-            
-            return img
+            # FIX: with mss.mss() erstellt eine neue Instanz pro Aufruf -> Thread Safe!
+            with mss.mss() as sct:
+                if mon_idx >= len(sct.monitors): mon_idx = 1
+                monitor = sct.monitors[mon_idx]
+                
+                sct_img = sct.grab(monitor)
+                img = np.array(sct_img)
+                img = cv2.cvtColor(img, cv2.COLOR_BGRA2BGR)
+                
+                return img
         except Exception as e:
             log_message(f"Screenshot Fehler: {e}")
             return None
 
     def auto_find_quest_text(self, img):
-        """ Findet den größten weißen Block (Questtext) im Bild """
         gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
         _, thresh = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
         
-        # Textzeilen verbinden
         kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (25, 10))
         dilated = cv2.dilate(thresh, kernel, iterations=1)
         
@@ -163,21 +155,19 @@ class VoiceEngine:
         
         if not contours: return img
 
-        # Suche größten Block (Mindestgröße beachten)
         valid_cnts = [c for c in contours if cv2.contourArea(c) > 5000]
         if not valid_cnts: return img
 
         largest = max(valid_cnts, key=cv2.contourArea)
         x, y, w, h = cv2.boundingRect(largest)
         
-        # Padding hinzufügen
         pad = 15
         h_img, w_img = img.shape[:2]
         x1, y1 = max(0, x-pad), max(0, y-pad)
         x2, y2 = min(w_img, x+w+pad), min(h_img, y+h+pad)
         
         cropped = img[y1:y2, x1:x2]
-        cv2.imwrite("last_detection_debug.png", cropped) # Debug Bild speichern
+        cv2.imwrite("last_detection_debug.png", cropped) 
         return cropped
 
     def run_ocr(self):
@@ -185,14 +175,11 @@ class VoiceEngine:
             img = self.get_monitor_screenshot()
             if img is None: return ""
 
-            # Automatische Suche im Bild
             optimized_img = self.auto_find_quest_text(img)
             
-            # OCR Vorbereitung
             gray = cv2.cvtColor(optimized_img, cv2.COLOR_BGR2GRAY)
             _, thresh = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
             
-            # PSM 6 = Ein Block Text
             config = r'--oem 3 --psm 6'
             text = pytesseract.image_to_string(thresh, config=config, lang='eng+deu')
             
