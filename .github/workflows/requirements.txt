@@ -1,1 +1,8 @@
-
+pygame
+keyboard
+requests
+elevenlabs
+pytesseract
+Pillow
+opencv-python
+edge-tts
