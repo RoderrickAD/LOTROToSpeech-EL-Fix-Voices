@@ -15,14 +15,18 @@ class VoiceEngine:
     def __init__(self):
         self.config = load_config()
         self.voices = []
-        pygame.mixer.init()
         
-        # Audio Cache Ordner erstellen
+        # Audio Init verbessert
+        try:
+            pygame.mixer.init()
+        except Exception as e:
+            log_message(f"Audio Init Fehler: {e}")
+        
+        # Audio Cache Ordner
         self.cache_dir = os.path.join(os.getcwd(), "AudioCache")
         if not os.path.exists(self.cache_dir):
             os.makedirs(self.cache_dir)
         
-        # Tesseract Pfad setzen
         tess_path = self.config.get("tesseract_path", r"C:\Program Files\Tesseract-OCR\tesseract.exe")
         pytesseract.pytesseract.tesseract_cmd = tess_path
 
@@ -97,7 +101,9 @@ class VoiceEngine:
         name = npc_log if npc_log != "Unknown" else npc_name_fallback
         vid, method = self.select_voice(name, gender)
         
-        if not vid: return
+        if not vid: 
+            log_message("Audio Abbruch: Keine Stimme gewählt.")
+            return
 
         log_message(f"Generiere neu: '{name}' ({method})")
         try:
@@ -114,13 +120,21 @@ class VoiceEngine:
             log_message(f"TTS Fehler: {e}")
 
     def play_audio_file(self, filepath):
+        """ Robuste Abspiel-Funktion """
         try:
+            # Mixer neu initialisieren, falls er hängt
+            pygame.mixer.quit()
+            pygame.mixer.init()
+            
             pygame.mixer.music.load(filepath)
             pygame.mixer.music.play()
+            
+            # Warte solange Musik spielt, aber erlaube Abbruch
             while pygame.mixer.music.get_busy():
                 time.sleep(0.1)
-            pygame.mixer.music.unload()
-        except: pass
+                
+        except Exception as e:
+            log_message(f"Fehler beim Abspielen: {e}")
 
     def get_monitor_screenshot(self):
         mon_idx = int(self.config.get("monitor_index", 1))
@@ -136,13 +150,31 @@ class VoiceEngine:
             log_message(f"Screenshot Fehler: {e}")
             return None
 
+    def crop_to_content(self, img):
+        """ Schneidet alle schwarzen Ränder weg """
+        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+        # Finde alle Pixel, die NICHT schwarz sind
+        coords = cv2.findNonZero(gray)
+        
+        if coords is not None:
+            x, y, w, h = cv2.boundingRect(coords)
+            # Kleines Padding lassen, damit Text nicht am Rand klebt
+            pad = 10
+            h_img, w_img = img.shape[:2]
+            
+            x = max(0, x - pad)
+            y = max(0, y - pad)
+            w = min(w_img - x, w + 2*pad)
+            h = min(h_img - y, h + 2*pad)
+            
+            return img[y:y+h, x:x+w]
+        
+        return img
+
     def auto_find_quest_text(self, img):
-        """ 
-        Findet den Quest-Text durch Maskierung.
-        """
         h_img, w_img = img.shape[:2]
         
-        # 1. Grober Ausschnitt (Ränder ignorieren)
+        # 1. Ränder ignorieren
         margin_top = int(h_img * 0.10)
         margin_bottom = int(h_img * 0.15)
         margin_lr = int(w_img * 0.10)
@@ -151,7 +183,7 @@ class VoiceEngine:
 
         roi = img[margin_top:h_img-margin_bottom, margin_lr:w_img-margin_lr]
         
-        # 2. HSV Filter: Nur reines Weiß/Grau behalten
+        # 2. Weiß-Maske
         hsv = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
         lower_white = np.array([0, 0, 160]) 
         upper_white = np.array([180, 50, 255]) 
@@ -163,7 +195,7 @@ class VoiceEngine:
         
         contours, _ = cv2.findContours(dilated, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         
-        # 4. Kandidaten filtern
+        # 4. Linken Block finden
         candidates = []
         roi_w = roi.shape[1]
         mid_x = roi_w / 2
@@ -171,7 +203,6 @@ class VoiceEngine:
         for cnt in contours:
             x, y, w, h = cv2.boundingRect(cnt)
             area = w * h
-            
             if area < 5000: continue
             
             center_x = x + (w / 2)
@@ -179,38 +210,34 @@ class VoiceEngine:
                 candidates.append((cnt, area))
         
         if not candidates:
-            best_cnt = max(contours, key=cv2.contourArea) if contours else None
+            # Fallback auf größten Block
+            if contours:
+                best_cnt = max(contours, key=cv2.contourArea)
+            else:
+                return roi 
         else:
             candidates.sort(key=lambda x: x[1], reverse=True)
             best_cnt = candidates[0][0]
 
-        if best_cnt is None: return roi
-
-        # 5. Koordinaten
+        # 5. Zuschneiden (Grob)
         rx, ry, rw, rh = cv2.boundingRect(best_cnt)
-        
         pad = 5
         rx1 = max(0, rx - pad)
         ry1 = max(0, ry - pad)
         rx2 = min(roi.shape[1], rx + rw + pad)
         ry2 = min(roi.shape[0], ry + rh + pad)
         
-        # --- MASKIERUNG ---
         cropped_roi = roi[ry1:ry2, rx1:rx2]
         cropped_mask = mask[ry1:ry2, rx1:rx2]
         
-        # Alles was nicht weiß ist, wird schwarz
-        final_image = cv2.bitwise_and(cropped_roi, cropped_roi, mask=cropped_mask)
+        # 6. Maskieren (Schwarz machen)
+        masked_image = cv2.bitwise_and(cropped_roi, cropped_roi, mask=cropped_mask)
         
-        # Debug Bilder
-        debug_full = img.copy()
-        final_x = rx1 + margin_lr
-        final_y = ry1 + margin_top
-        cv2.rectangle(debug_full, (final_x, final_y), (final_x + (rx2-rx1), final_y + (ry2-ry1)), (0, 255, 0), 3)
+        # 7. NEU: Auto-Trim (Schwarze Ränder weg)
+        final_image = self.crop_to_content(masked_image)
         
-        cv2.imwrite("last_detection_full_debug.png", debug_full)
+        # Debug
         cv2.imwrite("last_detection_debug.png", final_image)
-        cv2.imwrite("last_detection_mask_debug.png", mask)
         
         return final_image
 
@@ -221,9 +248,7 @@ class VoiceEngine:
 
             optimized_img = self.auto_find_quest_text(img)
             
-            # Bild ist schon maskiert, also direkt in Graustufen
             gray = cv2.cvtColor(optimized_img, cv2.COLOR_BGR2GRAY)
-            
             config = r'--oem 3 --psm 6'
             text = pytesseract.image_to_string(gray, config=config, lang='eng+deu')
             
