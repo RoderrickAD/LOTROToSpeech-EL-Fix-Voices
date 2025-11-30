@@ -12,10 +12,12 @@ class LotroApp:
         self.root = root
         self.root.title("LOTRO Voice Companion 2.0")
         
-        # Fenstergröße
+        # 1. FIX: Fenstergröße fest und stabil
         self.root.geometry("1000x900")
+        # Verhindert, dass das Fenster sich an den Inhalt anpasst (schrumpft)
+        self.root.pack_propagate(False) 
         
-        # Styles für größere Schrift
+        # Styles
         style = ttk.Style()
         style.theme_use('clam')
         style.configure('.', font=('Segoe UI', 11))
@@ -26,12 +28,8 @@ class LotroApp:
         style.configure('Treeview.Heading', font=('Segoe UI', 11, 'bold'))
         
         self.engine = VoiceEngine()
-        self.running = False
-        self.last_text = ""
         self.hotkey_hook = None
         
-        self.var_autoplay = tk.BooleanVar(value=False)
-
         self.notebook = ttk.Notebook(root)
         self.notebook.pack(expand=True, fill="both", padx=10, pady=10)
 
@@ -54,41 +52,36 @@ class LotroApp:
         self.register_hotkey()
 
     def setup_main_tab(self):
+        # Frame, der seine Größe behält
         frame = ttk.Frame(self.tab_main, padding=30)
         frame.pack(fill="both", expand=True)
+        frame.pack_propagate(False) 
 
-        ttk.Label(frame, text="LOTRO Voice Companion", font=("Segoe UI", 20, "bold")).pack(pady=15)
+        ttk.Label(frame, text="LOTRO Voice Companion", font=("Segoe UI", 24, "bold")).pack(pady=20)
         
         # Reset Button
-        ttk.Button(frame, text="Reset: Suche auf ganzem Monitor", command=self.reset_area).pack(fill="x", pady=5)
+        ttk.Button(frame, text="Reset: Suche auf ganzem Monitor", command=self.reset_area).pack(fill="x", pady=10)
 
-        self.lbl_status = ttk.Label(frame, text="Status: OCR Inaktiv", foreground="red", font=("Segoe UI", 12, "bold"))
-        self.lbl_status.pack(pady=15)
+        self.lbl_status = ttk.Label(frame, text="Status: Bereit (Warte auf Taste...)", foreground="green", font=("Segoe UI", 12, "bold"))
+        self.lbl_status.pack(pady=20)
 
-        # Steuerung Box
-        control_frame = ttk.LabelFrame(frame, text=" Steuerung ", padding=15)
-        control_frame.pack(fill="x", pady=10)
-
-        self.btn_ocr = ttk.Button(control_frame, text="Start Text-Erkennung (OCR)", command=self.toggle_ocr)
-        self.btn_ocr.pack(fill="x", pady=5)
-
-        self.btn_play = ttk.Button(control_frame, text="🔊 Audio jetzt abspielen", command=self.trigger_audio_manual)
-        self.btn_play.pack(fill="x", pady=5)
+        # Großer Action Button
+        btn_action = ttk.Button(frame, text="🎤 JETZT Scannen & Vorlesen", command=self.run_once_manual)
+        btn_action.pack(fill="x", ipady=15, pady=10)
         
-        chk = ttk.Checkbutton(control_frame, text="Automatisch abspielen bei neuem Text", variable=self.var_autoplay)
-        chk.pack(anchor="w", pady=5)
-        
-        ttk.Button(frame, text="Debug: Erkanntes Bild zeigen", command=self.open_debug_image).pack(pady=10)
+        ttk.Button(frame, text="Debug: Letztes Bild zeigen", command=self.open_debug_image).pack(pady=10)
 
-        ttk.Label(frame, text="Erkannter Text (Vorschau):", font=("Segoe UI", 11, "bold")).pack(pady=(15, 5), anchor="w")
-        self.txt_preview = tk.Text(frame, height=10, width=50, state="disabled", font=("Consolas", 10))
+        ttk.Label(frame, text="Erkannter Text:", font=("Segoe UI", 12, "bold")).pack(pady=(20, 5), anchor="w")
+        
+        # Textfeld fixieren
+        self.txt_preview = tk.Text(frame, height=15, width=50, state="disabled", font=("Consolas", 11))
         self.txt_preview.pack(fill="both", expand=True)
 
     def setup_settings_tab(self):
         frame = ttk.Frame(self.tab_settings, padding=30)
         frame.pack(fill="both", expand=True)
 
-        # Korrigierte Optionen für pack() (kein sticky!)
+        # FIX: Hier benutzen wir jetzt 'anchor' statt 'sticky' für pack()
         lbl_opts = {'anchor': 'w', 'pady': (10, 2)} 
 
         ttk.Label(frame, text="ElevenLabs API Key:").pack(**lbl_opts)
@@ -104,7 +97,7 @@ class LotroApp:
         self.ent_delay = ttk.Entry(frame, width=60)
         self.ent_delay.pack(fill="x", pady=2)
 
-        ttk.Label(frame, text="Hotkey:").pack(**lbl_opts)
+        ttk.Label(frame, text="Hotkey (löst Scan aus):").pack(**lbl_opts)
         self.ent_hotkey = ttk.Entry(frame, width=60)
         self.ent_hotkey.pack(fill="x", pady=2)
 
@@ -116,7 +109,7 @@ class LotroApp:
         self.ent_logpath = ttk.Entry(frame, width=60)
         self.ent_logpath.pack(fill="x", pady=2)
 
-        ttk.Button(frame, text="Speichern & Neustart Engine", command=self.save_settings).pack(pady=30, fill="x")
+        ttk.Button(frame, text="Speichern & Neustart", command=self.save_settings).pack(pady=30, fill="x")
 
     def setup_mapping_tab(self):
         frame = ttk.Frame(self.tab_mapping, padding=20)
@@ -184,8 +177,9 @@ class LotroApp:
             try: keyboard.remove_hotkey(self.hotkey_hook)
             except: pass
         try:
-            self.hotkey_hook = keyboard.add_hotkey(hk, lambda: self.root.after(0, self.trigger_audio_manual))
-            self.log(f"Hotkey aktiviert ({hk})")
+            # Hotkey triggert jetzt direkt den einmaligen Scan
+            self.hotkey_hook = keyboard.add_hotkey(hk, lambda: self.root.after(0, self.run_once_manual))
+            self.log(f"Hotkey aktiv ({hk}) -> Startet Scan & Audio")
         except: self.log("Hotkey Fehler")
 
     def refresh_mapping(self):
@@ -208,46 +202,42 @@ class LotroApp:
         else:
             self.log("Kein Debug-Bild vorhanden.")
 
-    def toggle_ocr(self):
-        if not self.running:
-            self.running = True
-            self.btn_ocr.config(text="STOP Text-Erkennung")
-            self.lbl_status.config(text="Status: OCR LÄUFT", foreground="green")
-            threading.Thread(target=self.ocr_loop, daemon=True).start()
-            self.log("OCR gestartet.")
-        else:
-            self.running = False
-            self.btn_ocr.config(text="START Text-Erkennung (OCR)")
-            self.lbl_status.config(text="Status: OCR Inaktiv", foreground="red")
-            self.log("OCR gestoppt.")
+    def run_once_manual(self):
+        """ Die neue Hauptfunktion: Einmal Scannen -> Sprechen -> Fertig """
+        self.lbl_status.config(text="Status: Scanne...", foreground="orange")
+        self.log("Manueller Start...")
+        
+        # Thread starten, damit GUI nicht einfriert
+        threading.Thread(target=self.process_pipeline, daemon=True).start()
 
-    def trigger_audio_manual(self):
-        text = self.txt_preview.get("1.0", tk.END).strip()
-        if not text:
-            self.log("Kein Text vorhanden.")
-            return
-        self.log("Audio manuell gestartet...")
-        threading.Thread(target=self.engine.generate_and_play, args=(text, "Unknown"), daemon=True).start()
+    def process_pipeline(self):
+        try:
+            # 1. OCR Scan
+            txt = self.engine.run_ocr()
+            
+            if not txt or len(txt) < 5:
+                self.log("Kein Text gefunden.")
+                # GUI Updates müssen im Main-Thread passieren (oder via config, meist ok bei Tkinter simple sets)
+                self.lbl_status.config(text="Status: Kein Text", foreground="red")
+                return
 
-    def ocr_loop(self):
-        while self.running:
-            try:
-                txt = self.engine.run_ocr()
-                if self.engine.is_new_text(txt, self.last_text):
-                    self.log(f"Neu erkannt ({len(txt)} Zeichen)")
-                    self.txt_preview.config(state="normal")
-                    self.txt_preview.delete(1.0, tk.END)
-                    self.txt_preview.insert(tk.END, txt)
-                    self.txt_preview.config(state="disabled")
-                    self.last_text = txt
-                    
-                    if self.var_autoplay.get():
-                        self.log("Auto-Play aktiv...")
-                        self.engine.generate_and_play(txt, "Unknown")
-                time.sleep(1)
-            except Exception as e:
-                print(f"Loop Error: {e}")
-                time.sleep(1)
+            self.log(f"Erkannt: {txt[:40]}...")
+            
+            # GUI Update
+            self.txt_preview.config(state="normal")
+            self.txt_preview.delete(1.0, tk.END)
+            self.txt_preview.insert(tk.END, txt)
+            self.txt_preview.config(state="disabled")
+            
+            # 2. Audio generieren
+            self.lbl_status.config(text="Status: Generiere Audio...", foreground="blue")
+            self.engine.generate_and_play(txt, "Unknown")
+            
+            self.lbl_status.config(text="Status: Fertig (Bereit)", foreground="green")
+            
+        except Exception as e:
+            self.log(f"Fehler: {e}")
+            self.lbl_status.config(text="Status: Fehler", foreground="red")
 
 if __name__ == "__main__":
     root = tk.Tk()
