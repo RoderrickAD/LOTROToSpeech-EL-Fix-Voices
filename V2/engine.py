@@ -145,73 +145,77 @@ class VoiceEngine:
 
     def auto_find_quest_text(self, img):
         """ 
-        Verbesserte Suche: 
-        1. Ignoriert untere und obere 15% (Skillbar/Menü).
-        2. Ignoriert sehr breite Elemente.
+        Strategie: Ignoriere Ränder (Skillbar unten, Menü oben), 
+        suche nur im sicheren Zentrum nach Text.
         """
         h_img, w_img = img.shape[:2]
-        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
         
-        # 1. Nur helles Weiß behalten (Quest Text ist meist weiß)
-        _, thresh = cv2.threshold(gray, 210, 255, cv2.THRESH_BINARY)
+        # 1. RÄNDER DEFINIEREN (Die "Scheuklappen")
+        # Wir ignorieren pauschal 10-15% vom Rand
+        margin_top = int(h_img * 0.10)    # Oben: 10% weg
+        margin_bottom = int(h_img * 0.15) # Unten: 15% weg (Skillbar!)
+        margin_lr = int(w_img * 0.10)     # Links/Rechts: 10% weg
         
-        # 2. Text verbinden
+        # Sicherheitscheck, falls Bild zu klein
+        if h_img < 200 or w_img < 200: return img
+
+        # 2. ROI (Region of Interest) ausschneiden
+        # Wir arbeiten jetzt nur noch mit diesem Ausschnitt
+        roi = img[margin_top:h_img-margin_bottom, margin_lr:w_img-margin_lr]
+        
+        # 3. Textsuche im ROI
+        gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
+        _, thresh = cv2.threshold(gray, 200, 255, cv2.THRESH_BINARY)
+        
         kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (30, 5))
         dilated = cv2.dilate(thresh, kernel, iterations=2)
         
         contours, _ = cv2.findContours(dilated, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         
-        if not contours: return img
-
         best_cnt = None
         max_area = 0
         
-        # Zonen definieren
-        ignore_bottom = h_img * 0.85 # Untere 15% ignorieren
-        ignore_top = h_img * 0.10    # Obere 10% ignorieren
-
         for cnt in contours:
             x, y, w, h = cv2.boundingRect(cnt)
             area = w * h
             
-            # Filter
-            if (y + h) > ignore_bottom: continue # Zu weit unten (Skillbar)
-            if y < ignore_top: continue # Zu weit oben
-            if area < 15000: continue # Zu klein für ein Questfenster
-            
-            # Aspekt-Ratio: Questfenster sind meist eher quadratisch oder leicht breit.
-            # Skillbars sind extrem breit (z.B. 20x breiter als hoch).
-            if w / float(h) > 8: continue 
+            if area < 10000: continue # Zu klein
+            if h > w * 2: continue # Zu hoch (wahrscheinlich keine Textbox)
 
             if area > max_area:
                 max_area = area
                 best_cnt = cnt
         
-        # Fallback
+        # Fallback: Wenn im Zentrum nichts ist, geben wir den ganzen ROI zurück
         if best_cnt is None:
-            # Wenn nichts gefunden, nimm Mitte
-            center_x = int(w_img * 0.2)
-            center_y = int(h_img * 0.2)
-            h_crop = int(h_img * 0.6)
-            w_crop = int(w_img * 0.6)
-            cropped = img[center_y:center_y+h_crop, center_x:center_x+w_crop]
-            cv2.imwrite("last_detection_debug.png", cropped)
-            return cropped
+            # Debug speichern
+            cv2.imwrite("last_detection_debug.png", roi)
+            return roi
 
-        x, y, w, h = cv2.boundingRect(best_cnt)
+        # 4. Koordinaten zurückrechnen auf das Originalbild
+        # Wir haben im ROI gefunden (rx, ry), müssen aber Offset addieren
+        rx, ry, rw, rh = cv2.boundingRect(best_cnt)
+        
         pad = 10
-        x1 = max(0, x - pad)
-        y1 = max(0, y - pad)
-        x2 = min(w_img, x + w + pad)
-        y2 = min(h_img, y + h + pad)
+        final_x = rx + margin_lr - pad
+        final_y = ry + margin_top - pad
+        final_w = rw + (pad*2)
+        final_h = rh + (pad*2)
+        
+        # Grenzen sichern
+        x1 = max(0, final_x)
+        y1 = max(0, final_y)
+        x2 = min(w_img, final_x + final_w)
+        y2 = min(h_img, final_y + final_h)
         
         cropped = img[y1:y2, x1:x2]
         
-        # Debug Bilder speichern
+        # Debug Bild mit Boxen
         debug_full = img.copy()
-        cv2.rectangle(debug_full, (x1, y1), (x2, y2), (0, 255, 0), 5)
-        # Rote Linie zeigt die Grenze der Ignorier-Zone
-        cv2.line(debug_full, (0, int(ignore_bottom)), (w_img, int(ignore_bottom)), (0, 0, 255), 3)
+        # Zeige den Suchbereich (Blau)
+        cv2.rectangle(debug_full, (margin_lr, margin_top), (w_img-margin_lr, h_img-margin_bottom), (255, 0, 0), 2)
+        # Zeige den Fund (Grün)
+        cv2.rectangle(debug_full, (x1, y1), (x2, y2), (0, 255, 0), 3)
         
         cv2.imwrite("last_detection_full_debug.png", debug_full)
         cv2.imwrite("last_detection_debug.png", cropped)
@@ -226,7 +230,7 @@ class VoiceEngine:
             optimized_img = self.auto_find_quest_text(img)
             
             gray = cv2.cvtColor(optimized_img, cv2.COLOR_BGR2GRAY)
-            # Für OCR wieder Otsu nutzen für maximale Lesbarkeit
+            # Otsu für OCR
             _, thresh = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
             
             config = r'--oem 3 --psm 6'
