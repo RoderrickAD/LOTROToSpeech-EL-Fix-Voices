@@ -13,6 +13,7 @@ import elevenLabsTTSEngine
 import createAllFilesAndDirectories
 import elevenlabsShowVoicesAvailable
 import getElevenLabsAvailableVoice
+import elevenlabs_manager  # NEU: Importiere den Manager
 
 rect_color = "#ffcccb"
 
@@ -20,8 +21,25 @@ pygame.init()
 pygame.mixer.init()
 pygame.mixer.music.stop()
 
-def get_default_voice():
+def initialize_voice_data():
+    """
+    Lädt die Default-Stimme UND den Pool aller verfügbaren Stimmen
+    für die dynamische Zuweisung.
+    """
+    # 1. Standard Logik (bleibt erhalten als Fallback)
     globalVariables.elevenlabs_default_voice = getElevenLabsAvailableVoice.get_elevenlabs_default_voice()
+    
+    # 2. NEU: Lade alle Stimmen dynamisch in den Speicher
+    print("Starte dynamisches Laden der ElevenLabs Stimmen...")
+    loaded_pool = elevenlabs_manager.fetch_elevenlabs_voices()
+    
+    if loaded_pool:
+        # Wir speichern das Ergebnis in globalVariables, damit die Engine darauf zugreifen kann
+        globalVariables.voice_pool = loaded_pool
+        print("Stimmen erfolgreich geladen und in globalVariables gespeichert.")
+    else:
+        globalVariables.voice_pool = None
+        print("Warnung: Konnte Stimmen-Pool nicht laden. Nutze Fallback.")
 
 def on_press(event):
     global rect
@@ -184,6 +202,7 @@ lookForTesseract.look_for_tesseract()
 
 startThreads.start_monitoring(monitor_loop)
 
-startThreads.start_monitoring(get_default_voice)
+# HIER GEÄNDERT: Ruft jetzt die neue Initialisierungs-Funktion auf
+startThreads.start_monitoring(initialize_voice_data)
 
 root.mainloop()
