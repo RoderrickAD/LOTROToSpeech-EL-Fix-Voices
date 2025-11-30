@@ -138,10 +138,7 @@ class VoiceEngine:
 
     def auto_find_quest_text(self, img):
         """ 
-        Findet den Quest-Text dynamisch.
-        Strategie: 
-        1. Filtere nach WEISS (ignoriert Gelb).
-        2. Suche den größten Textblock auf der LINKEN Seite (Story).
+        Findet den Quest-Text durch Maskierung.
         """
         h_img, w_img = img.shape[:2]
         
@@ -155,19 +152,18 @@ class VoiceEngine:
         roi = img[margin_top:h_img-margin_bottom, margin_lr:w_img-margin_lr]
         
         # 2. HSV Filter: Nur reines Weiß/Grau behalten
-        # Hohe Helligkeit, niedrige Sättigung -> Weiß
         hsv = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
         lower_white = np.array([0, 0, 160]) 
         upper_white = np.array([180, 50, 255]) 
         mask = cv2.inRange(hsv, lower_white, upper_white)
         
-        # 3. Verschmelzen (Kleiner Kernel trennt Spalten!)
+        # 3. Verschmelzen
         kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (25, 5))
         dilated = cv2.dilate(mask, kernel, iterations=2)
         
         contours, _ = cv2.findContours(dilated, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         
-        # 4. Kandidaten filtern (Linke Seite bevorzugt)
+        # 4. Kandidaten filtern
         candidates = []
         roi_w = roi.shape[1]
         mid_x = roi_w / 2
@@ -176,50 +172,47 @@ class VoiceEngine:
             x, y, w, h = cv2.boundingRect(cnt)
             area = w * h
             
-            if area < 5000: continue # Rauschen
+            if area < 5000: continue
             
-            # Mittelpunkt des Blocks
             center_x = x + (w / 2)
-            
-            # Ist der Block überwiegend auf der linken Seite?
             if center_x < (mid_x + roi_w * 0.1):
                 candidates.append((cnt, area))
         
         if not candidates:
-            # Fallback: Wenn links nichts ist, nimm den größten überhaupt
-            if contours:
-                best_cnt = max(contours, key=cv2.contourArea)
-            else:
-                return roi
+            best_cnt = max(contours, key=cv2.contourArea) if contours else None
         else:
-            # Nimm den größten Kandidaten von der linken Seite
             candidates.sort(key=lambda x: x[1], reverse=True)
             best_cnt = candidates[0][0]
 
-        # 5. Koordinaten berechnen
+        if best_cnt is None: return roi
+
+        # 5. Koordinaten
         rx, ry, rw, rh = cv2.boundingRect(best_cnt)
         
-        pad = 15
-        final_x = rx + margin_lr - pad
-        final_y = ry + margin_top - pad
-        final_w = rw + (pad*2)
-        final_h = rh + (pad*2)
+        pad = 5
+        rx1 = max(0, rx - pad)
+        ry1 = max(0, ry - pad)
+        rx2 = min(roi.shape[1], rx + rw + pad)
+        ry2 = min(roi.shape[0], ry + rh + pad)
         
-        x1 = max(0, final_x)
-        y1 = max(0, final_y)
-        x2 = min(w_img, final_x + final_w)
-        y2 = min(h_img, final_y + final_h)
+        # --- MASKIERUNG ---
+        cropped_roi = roi[ry1:ry2, rx1:rx2]
+        cropped_mask = mask[ry1:ry2, rx1:rx2]
         
-        cropped = img[y1:y2, x1:x2]
+        # Alles was nicht weiß ist, wird schwarz
+        final_image = cv2.bitwise_and(cropped_roi, cropped_roi, mask=cropped_mask)
         
-        # Debug
+        # Debug Bilder
         debug_full = img.copy()
-        cv2.rectangle(debug_full, (x1, y1), (x2, y2), (0, 255, 0), 3)
+        final_x = rx1 + margin_lr
+        final_y = ry1 + margin_top
+        cv2.rectangle(debug_full, (final_x, final_y), (final_x + (rx2-rx1), final_y + (ry2-ry1)), (0, 255, 0), 3)
+        
         cv2.imwrite("last_detection_full_debug.png", debug_full)
-        cv2.imwrite("last_detection_debug.png", cropped)
+        cv2.imwrite("last_detection_debug.png", final_image)
         cv2.imwrite("last_detection_mask_debug.png", mask)
         
-        return cropped
+        return final_image
 
     def run_ocr(self):
         try:
@@ -228,12 +221,11 @@ class VoiceEngine:
 
             optimized_img = self.auto_find_quest_text(img)
             
-            # OCR auf das Ergebnis
+            # Bild ist schon maskiert, also direkt in Graustufen
             gray = cv2.cvtColor(optimized_img, cv2.COLOR_BGR2GRAY)
-            _, thresh = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
             
             config = r'--oem 3 --psm 6'
-            text = pytesseract.image_to_string(thresh, config=config, lang='eng+deu')
+            text = pytesseract.image_to_string(gray, config=config, lang='eng+deu')
             
             return re.sub(r'\s+', ' ', text).strip()
         except Exception as e:
