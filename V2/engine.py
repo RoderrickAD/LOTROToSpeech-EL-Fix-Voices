@@ -1,293 +1,299 @@
-import pytesseract
-import requests
-import hashlib
-import os
+import tkinter as tk
+from tkinter import ttk, messagebox, scrolledtext
+import threading
 import time
-import pygame
-import re
-import difflib
-import cv2
-import numpy as np
-import mss 
-from utils import load_config, load_mapping, save_mapping, log_message
+import os
+import keyboard
+from engine import VoiceEngine
+from utils import save_config, log_message
 
-class VoiceEngine:
-    def __init__(self):
-        self.config = load_config()
-        self.voices = []
+# --- LOTRO FARBPALETTE ---
+COLOR_BG_MAIN = "#191b1e"       # Sehr dunkles Grau (Hintergrund)
+COLOR_BG_FRAME = "#25282d"      # Etwas helleres Grau (Container)
+COLOR_TEXT_GOLD = "#d4af37"     # LOTRO Gold (Titel/Wichtige Infos)
+COLOR_TEXT_SILVER = "#c0c0c0"   # Silber (Normaler Text)
+COLOR_BTN_BG = "#3d424b"        # Button Hintergrund
+COLOR_BTN_FG = "#e6e6e6"        # Button Text
+COLOR_ENTRY_BG = "#0f0f0f"      # Eingabefelder Schwarz
+COLOR_ACCENT = "#782221"        # Dunkelrot (für Fehler)
+
+FONT_UI = ("Georgia", 11)       # Serif-Schrift für Fantasy-Look
+FONT_TITLE = ("Georgia", 22, "bold")
+FONT_BOLD = ("Georgia", 11, "bold")
+FONT_MONO = ("Consolas", 10)
+
+class LotroApp:
+    def __init__(self, root):
+        self.root = root
+        self.root.title("LOTRO Voice Companion 2.0")
         
+        # FIX: Fenstergröße fest und stabil
+        self.root.geometry("1000x900")
+        self.root.pack_propagate(False) 
+        
+        # Styles konfigurieren
+        self.setup_styles()
+        
+        self.engine = VoiceEngine()
+        self.hotkey_hook = None
+        
+        self.notebook = ttk.Notebook(root)
+        self.notebook.pack(expand=True, fill="both", padx=10, pady=10)
+
+        self.tab_main = self.create_tab_frame(self.notebook)
+        self.tab_settings = self.create_tab_frame(self.notebook)
+        self.tab_mapping = self.create_tab_frame(self.notebook)
+        self.tab_logs = self.create_tab_frame(self.notebook)
+
+        self.notebook.add(self.tab_main, text="  Hauptmenü  ")
+        self.notebook.add(self.tab_settings, text="  Einstellungen  ")
+        self.notebook.add(self.tab_mapping, text="  Stimmen  ")
+        self.notebook.add(self.tab_logs, text="  Logs  ")
+
+        self.setup_main_tab()
+        self.setup_settings_tab()
+        self.setup_mapping_tab()
+        self.setup_logs_tab()
+
+        self.load_settings_to_ui()
+        self.register_hotkey()
+
+    def setup_styles(self):
+        style = ttk.Style()
+        style.theme_use('clam')
+        
+        # Notebook (Tabs) Style
+        style.configure("TNotebook", background=COLOR_BG_MAIN, borderwidth=0)
+        style.configure("TNotebook.Tab", 
+                        background=COLOR_BTN_BG, 
+                        foreground=COLOR_TEXT_SILVER, 
+                        font=FONT_BOLD, 
+                        padding=[15, 5])
+        style.map("TNotebook.Tab", 
+                  background=[("selected", COLOR_BG_FRAME)], 
+                  foreground=[("selected", COLOR_TEXT_GOLD)])
+
+        # Frame Style
+        style.configure("TFrame", background=COLOR_BG_FRAME)
+        
+        # Label Style
+        style.configure("TLabel", background=COLOR_BG_FRAME, foreground=COLOR_TEXT_SILVER, font=FONT_UI)
+        style.configure("Header.TLabel", foreground=COLOR_TEXT_GOLD, font=FONT_TITLE)
+        
+        # Treeview (Listen)
+        style.configure("Treeview", 
+                        background=COLOR_ENTRY_BG, 
+                        foreground=COLOR_TEXT_SILVER, 
+                        fieldbackground=COLOR_ENTRY_BG,
+                        font=FONT_UI,
+                        rowheight=28)
+        style.configure("Treeview.Heading", background=COLOR_BTN_BG, foreground=COLOR_TEXT_GOLD, font=FONT_BOLD)
+        style.map("Treeview", background=[("selected", "#3a4a5e")])
+        
+        # Entry Style
+        style.configure("TEntry", fieldbackground=COLOR_ENTRY_BG, foreground=COLOR_TEXT_SILVER, font=FONT_UI)
+
+    def create_tab_frame(self, parent):
+        frame = ttk.Frame(parent)
+        frame.pack(fill="both", expand=True)
+        return frame
+
+    def create_lotro_button(self, parent, text, command, bg_color=COLOR_BTN_BG):
+        btn = tk.Button(parent, 
+                        text=text, 
+                        command=command,
+                        bg=bg_color,
+                        fg=COLOR_TEXT_GOLD,
+                        font=FONT_BOLD,
+                        activebackground=COLOR_TEXT_GOLD,
+                        activeforeground=COLOR_BG_MAIN,
+                        relief="ridge",
+                        bd=3,
+                        padx=20,
+                        pady=10,
+                        cursor="hand2")
+        return btn
+
+    def setup_main_tab(self):
+        container = tk.Frame(self.tab_main, bg=COLOR_BG_FRAME)
+        container.pack(fill="both", expand=True, padx=20, pady=20)
+        container.pack_propagate(False) 
+
+        ttk.Label(container, text="LOTRO Voice Companion", style="Header.TLabel").pack(pady=(0, 20))
+
+        status_frame = tk.Frame(container, bg=COLOR_ENTRY_BG, bd=2, relief="sunken")
+        status_frame.pack(fill="x", pady=10, padx=5)
+        
+        self.lbl_status = tk.Label(status_frame, text="Status: Bereit (Warte auf Taste...)", 
+                                   bg=COLOR_ENTRY_BG, fg="#4caf50", font=FONT_BOLD, pady=10)
+        self.lbl_status.pack()
+
+        self.btn_action = self.create_lotro_button(container, "🎤 JETZT Scannen & Vorlesen", self.run_once_manual)
+        self.btn_action.pack(fill="x", pady=20, ipady=5)
+
+        ttk.Label(container, text="Erkannter Quest-Text:", foreground=COLOR_TEXT_GOLD).pack(anchor="w", pady=(10, 5))
+        
+        self.txt_preview = tk.Text(container, height=15, width=50, state="disabled", bg=COLOR_ENTRY_BG, fg=COLOR_TEXT_SILVER, 
+                                   insertbackground="white", font=("Consolas", 11), relief="flat", padx=10, pady=10)
+        self.txt_preview.pack(fill="both", expand=True)
+        self.txt_preview.config(state="disabled")
+
+    def setup_settings_tab(self):
+        frame = ttk.Frame(self.tab_settings, padding=30)
+        frame.pack(fill="both", expand=True)
+
+        lbl_opts = {'anchor': 'w', 'pady': (10, 2)} 
+
+        ttk.Label(frame, text="ElevenLabs API Key:").pack(**lbl_opts)
+        self.ent_api_key = tk.Entry(frame, width=60, show="*", bg=COLOR_ENTRY_BG, fg=COLOR_TEXT_SILVER, insertbackground="white", font=FONT_UI, relief="flat", bd=5)
+        self.ent_api_key.pack(fill="x", pady=2)
+
+        ttk.Label(frame, text="Monitor Auswahl:").pack(**lbl_opts)
+        self.cmb_monitor = ttk.Combobox(frame, values=["1", "2", "3", "4"], state="readonly", font=FONT_UI)
+        self.cmb_monitor.pack(fill="x", pady=2)
+        self.cmb_monitor.set("1")
+
+        ttk.Label(frame, text="Verzögerung (Sekunden):").pack(**lbl_opts)
+        self.ent_delay = tk.Entry(frame, width=60, bg=COLOR_ENTRY_BG, fg=COLOR_TEXT_SILVER, insertbackground="white", font=FONT_UI, relief="flat", bd=5)
+        self.ent_delay.pack(fill="x", pady=2)
+
+        ttk.Label(frame, text="Hotkey (löst Scan aus):").pack(**lbl_opts)
+        self.ent_hotkey = tk.Entry(frame, width=60, bg=COLOR_ENTRY_BG, fg=COLOR_TEXT_SILVER, insertbackground="white", font=FONT_UI, relief="flat", bd=5)
+        self.ent_hotkey.pack(fill="x", pady=2)
+
+        ttk.Label(frame, text="Tesseract Pfad:").pack(**lbl_opts)
+        self.ent_tesseract = tk.Entry(frame, width=60, bg=COLOR_ENTRY_BG, fg=COLOR_TEXT_SILVER, insertbackground="white", font=FONT_UI, relief="flat", bd=5)
+        self.ent_tesseract.pack(fill="x", pady=2)
+
+        ttk.Label(frame, text="Script.log Pfad:").pack(**lbl_opts)
+        self.ent_logpath = tk.Entry(frame, width=60, bg=COLOR_ENTRY_BG, fg=COLOR_TEXT_SILVER, insertbackground="white", font=FONT_UI, relief="flat", bd=5)
+        self.ent_logpath.pack(fill="x", pady=2)
+
+        self.create_lotro_button(frame, "Speichern & Neustart", self.save_settings).pack(pady=30, fill="x")
+
+    def setup_mapping_tab(self):
+        container = tk.Frame(self.tab_mapping, bg=COLOR_BG_FRAME)
+        container.pack(fill="both", expand=True, padx=20, pady=20)
+        
+        tree_frame = ttk.Frame(container)
+        tree_frame.pack(fill="both", expand=True)
+        
+        scrollbar = ttk.Scrollbar(tree_frame)
+        scrollbar.pack(side="right", fill="y")
+        
+        self.tree = ttk.Treeview(tree_frame, columns=("NPC", "VoiceID"), show="headings", yscrollcommand=scrollbar.set)
+        self.tree.heading("NPC", text="NPC Name")
+        self.tree.heading("VoiceID", text="Stimme")
+        self.tree.column("NPC", width=250)
+        self.tree.column("VoiceID", width=350)
+        self.tree.pack(fill="both", expand=True)
+        
+        scrollbar.config(command=self.tree.yview)
+        
+        self.create_lotro_button(container, "Liste aktualisieren", self.refresh_mapping).pack(pady=15, fill="x")
+
+    def setup_logs_tab(self):
+        container = tk.Frame(self.tab_logs, bg=COLOR_BG_FRAME)
+        container.pack(fill="both", expand=True, padx=20, pady=20)
+        
+        self.log_widget = scrolledtext.ScrolledText(container, state='disabled', bg=COLOR_ENTRY_BG, fg="#a0a0a0", font=FONT_MONO)
+        self.log_widget.pack(fill="both", expand=True)
+
+    def log(self, msg):
+        self.log_widget.config(state='normal')
+        self.log_widget.insert(tk.END, msg + "\n")
+        self.log_widget.see(tk.END)
+        self.log_widget.config(state='disabled')
+
+    def load_settings_to_ui(self):
+        cfg = self.engine.config
+        self.ent_api_key.insert(0, cfg.get("api_key", ""))
+        self.ent_tesseract.insert(0, cfg.get("tesseract_path", ""))
+        self.ent_logpath.insert(0, cfg.get("lotro_log_path", ""))
+        self.ent_hotkey.insert(0, cfg.get("hotkey", "ctrl+alt+s"))
+        self.ent_delay.insert(0, str(cfg.get("audio_delay", 0.5)))
+        self.cmb_monitor.set(str(cfg.get("monitor_index", 1)))
+        self.refresh_mapping()
+
+    def save_settings(self):
+        cfg = self.engine.config
+        cfg["api_key"] = self.ent_api_key.get().strip()
+        cfg["tesseract_path"] = self.ent_tesseract.get().strip()
+        cfg["lotro_log_path"] = self.ent_logpath.get().strip()
+        cfg["hotkey"] = self.ent_hotkey.get().strip()
         try:
-            pygame.mixer.init()
-        except Exception as e:
-            log_message(f"Audio Init Fehler: {e}")
-        
-        self.cache_dir = os.path.join(os.getcwd(), "AudioCache")
-        if not os.path.exists(self.cache_dir):
-            os.makedirs(self.cache_dir)
-        
-        tess_path = self.config.get("tesseract_path", r"C:\Program Files\Tesseract-OCR\tesseract.exe")
-        pytesseract.pytesseract.tesseract_cmd = tess_path
-
-    def is_new_text(self, new_text, old_text):
-        if not new_text or len(new_text) < 15: return False
-        if not old_text: return True
-        ratio = difflib.SequenceMatcher(None, new_text, old_text).ratio()
-        return ratio <= 0.85
-
-    def fetch_voices(self):
-        api_key = self.config.get("api_key", "").strip()
-        if not api_key: return []
-        try:
-            headers = {"xi-api-key": api_key}
-            resp = requests.get("https://api.elevenlabs.io/v1/voices", headers=headers)
-            if resp.status_code == 200:
-                self.voices = resp.json().get('voices', [])
-                log_message(f"{len(self.voices)} Stimmen geladen.")
-                return self.voices
-        except: pass
-        return []
-
-    def get_npc_from_log(self):
-        try:
-            path = self.config.get("lotro_log_path", "")
-            if os.path.exists(path):
-                with open(path, "r", encoding="utf-8", errors="ignore") as f:
-                    lines = f.readlines()
-                    if lines:
-                        last = lines[-1].strip()
-                        gender = "Female" if any(x in last.lower() for x in ["female", "frau", "she"]) else "Male"
-                        return last, gender
-        except: pass
-        return "Unknown", "Unknown"
-
-    def select_voice(self, npc_name, npc_gender):
-        if not self.voices:
-            log_message("Keine Stimmen im Speicher. Versuche Laden...")
-            self.fetch_voices()
-            if not self.voices: 
-                return "21m00Tcm4TlvDq8ikWAM", "NOTFALL (Rachel)" 
-
-        mapping = load_mapping()
-        if npc_name in mapping:
-            return mapping[npc_name], "Gedächtnis"
-
-        for v in self.voices:
-            if npc_name.lower() in v['name'].lower():
-                mapping[npc_name] = v['voice_id']
-                save_mapping(mapping)
-                return v['voice_id'], "Namens-Match"
-
-        filtered = [v for v in self.voices if npc_gender.lower() in v.get('labels', {}).get('gender', '').lower()]
-        if not filtered: filtered = self.voices
-        
-        idx = int(hashlib.md5(npc_name.encode('utf-8')).hexdigest(), 16) % len(filtered)
-        vid = filtered[idx]['voice_id']
-        mapping[npc_name] = vid
-        save_mapping(mapping)
-        return vid, "Berechnet"
-
-    def generate_and_play(self, text, npc_name_fallback="Unknown"):
-        delay = float(self.config.get("audio_delay", 0.5))
-        if delay > 0: time.sleep(delay)
-
-        text_hash = hashlib.md5(text.encode('utf-8')).hexdigest()
-        cache_file = os.path.join(self.cache_dir, f"quest_{text_hash}.mp3")
-
-        if os.path.exists(cache_file):
-            log_message("Spiele aus Cache...")
-            self.play_audio_file(cache_file)
+            cfg["audio_delay"] = float(self.ent_delay.get().strip())
+            cfg["monitor_index"] = int(self.cmb_monitor.get())
+        except:
+            messagebox.showerror("Fehler", "Zahlenformat falsch")
             return
 
-        npc_log, gender = self.get_npc_from_log()
-        name = npc_log if npc_log != "Unknown" else npc_name_fallback
-        
-        vid, method = self.select_voice(name, gender)
-        
-        if method == "NOTFALL (Rachel)": 
-            log_message(f"WARNUNG: Notfall-Stimme verwendet. API Key prüfen!")
+        save_config(cfg)
+        self.engine.config = cfg
+        self.register_hotkey()
+        threading.Thread(target=self.engine.fetch_voices).start()
+        messagebox.showinfo("Gespeichert", "Einstellungen wurden übernommen.")
 
-        if not vid: 
-            log_message("ABBRUCH: Konnte keine Stimme zuweisen.")
-            return
-
-        log_message(f"Generiere neu: '{name}' ({method})")
-        try:
-            headers = {"xi-api-key": self.config.get("api_key", ""), "Content-Type": "application/json"}
-            data = {"text": text, "model_id": "eleven_turbo_v2_5", "voice_settings": {"stability": 0.5}}
-            resp = requests.post(f"https://api.elevenlabs.io/v1/text-to-speech/{vid}", headers=headers, json=data)
-            
-            if resp.status_code == 200:
-                with open(cache_file, "wb") as f: f.write(resp.content)
-                self.play_audio_file(cache_file)
-            else:
-                log_message(f"API Fehler: {resp.text}")
-        except Exception as e:
-            log_message(f"TTS Fehler: {e}")
-
-    def play_audio_file(self, filepath):
-        try:
-            pygame.mixer.quit()
-            pygame.mixer.init()
-            pygame.mixer.music.load(filepath)
-            pygame.mixer.music.play()
-            while pygame.mixer.music.get_busy():
-                time.sleep(0.1)
-        except Exception as e:
-            log_message(f"Fehler beim Abspielen: {e}")
-
-    def get_monitor_screenshot(self):
-        mon_idx = int(self.config.get("monitor_index", 1))
-        try:
-            with mss.mss() as sct:
-                if mon_idx >= len(sct.monitors): mon_idx = 1
-                monitor = sct.monitors[mon_idx]
-                sct_img = sct.grab(monitor)
-                img = np.array(sct_img)
-                img = cv2.cvtColor(img, cv2.COLOR_BGRA2BGR)
-                return img
-        except Exception as e:
-            log_message(f"Screenshot Fehler: {e}")
-            return None
-
-    def crop_to_content(self, img):
-        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-        
-        # Stärkere Rauschunterdrückung
-        denoised = cv2.medianBlur(gray, 5) 
-        
-        coords = cv2.findNonZero(denoised)
-        if coords is not None:
-            x, y, w, h = cv2.boundingRect(coords)
-            
-            # Padding
-            pad = 5
-            h_img, w_img = img.shape[:2]
-            
-            x = max(0, x - pad)
-            y = max(0, y - pad)
-            w = min(w_img - x, w + 2*pad)
-            h = min(h_img - y, h + 2*pad)
-            
-            return img[y:y+h, x:x+w]
-        
-        return img
-
-    def auto_find_quest_text(self, img):
-        h_img, w_img = img.shape[:2]
-        
-        margin_top = int(h_img * 0.10)
-        margin_bottom = int(h_img * 0.15)
-        margin_lr = int(w_img * 0.10)
-        
-        if h_img < 200 or w_img < 200: return img
-
-        roi = img[margin_top:h_img-margin_bottom, margin_lr:w_img-margin_lr]
-        
-        # 1. Weiß-Maske (gegen Gelb)
-        hsv = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
-        lower_white = np.array([0, 0, 160]) 
-        upper_white = np.array([180, 50, 255]) 
-        mask = cv2.inRange(hsv, lower_white, upper_white)
-        
-        # 2. Verschmelzen (KLEIN)
-        kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (25, 5))
-        dilated = cv2.dilate(mask, kernel, iterations=2)
-        
-        contours, _ = cv2.findContours(dilated, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        
-        candidates = []
-        roi_w = roi.shape[1]
-        mid_x = roi_w / 2
-        
-        for cnt in contours:
-            x, y, w, h = cv2.boundingRect(cnt)
-            area = w * h
-            if area < 5000: continue
-            
-            center_x = x + (w / 2)
-            if center_x < (mid_x + roi_w * 0.1):
-                candidates.append((cnt, area))
-        
-        if not candidates:
-            if contours:
-                best_cnt = max(contours, key=cv2.contourArea)
-            else:
-                return roi
-        else:
-            candidates.sort(key=lambda x: x[1], reverse=True)
-            best_cnt = candidates[0][0]
-
-        rx, ry, rw, rh = cv2.boundingRect(best_cnt)
-        pad = 5
-        rx1 = max(0, rx - pad)
-        ry1 = max(0, ry - pad)
-        rx2 = min(roi.shape[1], rx + rw + pad)
-        ry2 = min(roi.shape[0], ry + rh + pad)
-        
-        cropped_roi = roi[ry1:ry2, rx1:rx2]
-        cropped_mask = mask[ry1:ry2, rx1:rx2]
-        
-        # 3. Maskieren
-        masked_image = cv2.bitwise_and(cropped_roi, cropped_roi, mask=cropped_mask)
-        
-        # 4. Auto-Trim (Schwarze Ränder weg)
-        final_image = self.crop_to_content(masked_image)
-        
-        # Debug
-        cv2.imwrite("last_detection_debug.png", final_image)
-        
-        return final_image
-
-    def run_ocr(self):
-        try:
-            img = self.get_monitor_screenshot()
-            if img is None: return ""
-
-            optimized_img = self.auto_find_quest_text(img)
-            
-            gray = cv2.cvtColor(optimized_img, cv2.COLOR_BGR2GRAY)
-            
-            # FIX 1: Aggressivere Tesseract-Konfiguration für Umlaute und Serifen
-            # Wir fügen die Blacklist hinzu, um Tesseract zu zwingen, keine Sonderzeichen für i/n zu verwenden.
-            # Aber: Wir müssen die TESSDATA_PREFIX Umgebungsvariable korrekt setzen.
-            # Da wir das nicht können, nutzen wir den Tesseract Config String
-            
-            # Konfiguration für bessere deutsche OCR
-            config = r'--oem 3 --psm 6 -l deu+eng' 
-            # Die alten Fehlzeichen waren oft Ergebnis von Tesseract's Versuchen, die Serifen-Schrift zu lesen.
-            
-            raw_text = pytesseract.image_to_string(gray, config=config)
-            
-            # Post-Processing: Entferne unnötige Zeilen (die nicht in Anführungszeichen stehen)
-            lines = raw_text.split('\n')
-            
-            cleaned_lines = []
-            for line in lines:
-                stripped = line.strip()
-                if not stripped: continue
-                
-                # Wenn Zeile mit ' oder " beginnt oder endet, oder Zeichen enthält
-                if stripped.startswith(('"', "'")) or stripped.endswith(('"', "'", ".", "!", "?")) or len(stripped) > 20:
-                    cleaned_lines.append(stripped)
-
-            # Zusammenfügen und Leerzeichen normalisieren
-            clean_output = ' '.join(cleaned_lines)
-            clean_output = re.sub(r'\s+', ' ', clean_output).strip()
-            
-            # FIX 2: Entferne bekannte Müll-Fragmente, die nicht Dialog sind
-            clean_output = re.sub(r'oo|Oo|oO|Solo|solo|NYZ B|„Aa 1', '', clean_output)
-            clean_output = re.sub(r'‘', "'", clean_output)
-            
-            # Speichern für Debugging
-            try:
-                with open("last_recognized_text.txt", "w", encoding="utf-8") as f:
-                    f.write("--- RAW TESSERACT OUTPUT ---\n")
-                    f.write(raw_text)
-                    f.write("\n\n--- FILTERED OUTPUT (SEND TO AI) ---\n")
-                    f.write(clean_output)
+    def register_hotkey(self):
+        hk = self.engine.config.get("hotkey", "ctrl+alt+s")
+        if self.hotkey_hook:
+            try: keyboard.remove_hotkey(self.hotkey_hook)
             except: pass
+        try:
+            # FIX: Tkinter after muss im Main-Thread aufgerufen werden. 
+            # Die Lambda-Funktion ist hier nur der Wrapper für den Hotkey-Thread.
+            self.hotkey_hook = keyboard.add_hotkey(hk, lambda: self.root.after(0, self.run_once_manual))
+            self.log(f"Hotkey aktiv ({hk}) -> Startet Scan & Audio")
+        except: self.log("Hotkey Fehler")
+
+    def refresh_mapping(self):
+        for i in self.tree.get_children(): self.tree.delete(i)
+        from utils import load_mapping
+        mp = load_mapping()
+        vm = {v['voice_id']: v['name'] for v in self.engine.voices}
+        for n, v in mp.items(): self.tree.insert("", "end", values=(n, vm.get(v, v)))
+
+    def reset_area(self):
+        cfg = self.engine.config
+        cfg["ocr_coords"] = None
+        save_config(cfg)
+        self.log("Bereich Reset: Suche auf ganzem Monitor")
+
+    def run_once_manual(self):
+        self.lbl_status.config(text="Status: Scanne...", fg=COLOR_TEXT_GOLD)
+        self.log("Manueller Start...")
+        
+        threading.Thread(target=self.process_pipeline, daemon=True).start()
+
+    def process_pipeline(self):
+        try:
+            txt = self.engine.run_ocr()
             
-            return clean_output
+            if not txt or len(txt) < 5:
+                self.log("Kein Text gefunden.")
+                self.root.after(0, lambda: self.lbl_status.config(text="Status: Kein Text gefunden", fg=COLOR_ACCENT))
+                return
+
+            self.log(f"Erkannt: {txt[:40]}...")
+            
+            # GUI Update muss im Main-Thread sein
+            self.root.after(0, lambda: [
+                self.txt_preview.config(state="normal"),
+                self.txt_preview.delete(1.0, tk.END),
+                self.txt_preview.insert(tk.END, txt),
+                self.txt_preview.config(state="disabled")
+            ])
+            
+            self.root.after(0, lambda: self.lbl_status.config(text="Status: Generiere Audio...", fg="#4facfe"))
+            self.engine.generate_and_play(txt, "Unknown")
+            
+            self.root.after(0, lambda: self.lbl_status.config(text="Status: Fertig (Bereit)", fg="#4caf50"))
+            
         except Exception as e:
-            log_message(f"OCR Fehler: {e}")
-            return ""
+            self.log(f"Fehler: {e}")
+            self.root.after(0, lambda: self.lbl_status.config(text="Status: Fehler", fg=COLOR_ACCENT))
+
+if __name__ == "__main__":
+    root = tk.Tk()
+    app = LotroApp(root)
+    root.mainloop()
