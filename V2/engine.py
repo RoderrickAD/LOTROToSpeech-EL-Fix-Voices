@@ -41,7 +41,7 @@ class VoiceEngine:
         self.templates = self._load_templates()
         
     def _load_templates(self):
-        """Lädt die Template-Bilder aus dem 'templates'-Ordner."""
+        """Lädt die Template-Bilder aus dem 'templates'-Ordner als Graustufen (Performance-Optimierung)."""
         template_dir = os.path.join(os.getcwd(), "templates")
         templates = {}
         template_names = {
@@ -54,14 +54,15 @@ class VoiceEngine:
         for key, filename in template_names.items():
             filepath = os.path.join(template_dir, filename)
             if os.path.exists(filepath):
-                templates[key] = cv2.imread(filepath, cv2.IMREAD_COLOR) 
+                # Lade Templates direkt als Graustufen, um Konvertierungen in der Schleife zu vermeiden
+                templates[key] = cv2.imread(filepath, cv2.IMREAD_GRAYSCALE) 
                 if templates[key] is None:
                     log_message(f"WARNUNG: Konnte Template '{filepath}' nicht laden.")
             else:
                 log_message(f"FEHLER: Template '{filepath}' nicht gefunden.")
                 return None 
 
-        if len(templates) == len(template_names):
+        if len(templates) == len(template_names) and all(templates.values()):
             log_message(f"{len(templates)} Templates erfolgreich geladen.")
             return templates
         else:
@@ -154,7 +155,12 @@ class VoiceEngine:
         return vid, "Berechnet"
 
     def generate_and_play(self, text, npc_name_fallback="Unknown"):
-        delay = float(self.config.get("audio_delay", 0.5))
+        # Robuste Typumwandlung mit Fallback
+        try:
+            delay = float(self.config.get("audio_delay", 0.5))
+        except ValueError:
+            delay = 0.5
+            
         if delay > 0: time.sleep(delay)
 
         text_hash = hashlib.md5(text.encode('utf-8')).hexdigest()
@@ -220,7 +226,12 @@ class VoiceEngine:
         threading.Thread(target=self._play_audio_thread, args=(filepath,)).start()
         
     def get_monitor_screenshot(self):
-        mon_idx = int(self.config.get("monitor_index", 1))
+        # Robuste Typumwandlung mit Fallback
+        try:
+            mon_idx = int(self.config.get("monitor_index", 1))
+        except ValueError:
+            mon_idx = 1
+            
         try:
             with mss.mss() as sct:
                 if mon_idx >= len(sct.monitors): mon_idx = 1
@@ -254,11 +265,29 @@ class VoiceEngine:
         
         return img
 
+    def _filter_recognized_lines(self, raw_lines):
+        """Filtert und bereinigt die Zeilen des rohen Tesseract-Outputs."""
+        cleaned_lines = []
+        for line in raw_lines:
+            stripped = line.strip()
+            if not stripped: continue
+            
+            # Überprüfen auf Dialogmerkmale
+            is_dialog_start_end = stripped.startswith(('"', "'")) or stripped.endswith(('"', "'"))
+            is_dialog_end_punc = stripped.endswith((".", "!", "?"))
+            
+            # Behält Sätze mit Dialogmarkern oder sehr lange Sätze (20+ Zeichen) bei
+            if (is_dialog_start_end or is_dialog_end_punc) or len(stripped) > 20:
+                cleaned_lines.append(stripped)
+                
+        return cleaned_lines
+
     def auto_find_quest_text(self, img):
         if self.templates is None:
             log_message("Template Matching nicht verfügbar. Fallback auf frühere Methode.")
             return self._fallback_auto_find_quest_text(img)
 
+        # Performance: Konvertiere Screenshot nur einmal zu Graustufen
         gray_screenshot = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
         
         found_positions = {}
@@ -267,9 +296,8 @@ class VoiceEngine:
         for key, template_img in self.templates.items():
             if template_img is None: continue
             
-            gray_template = cv2.cvtColor(template_img, cv2.COLOR_BGR2GRAY)
-            
-            res = cv2.matchTemplate(gray_screenshot, gray_template, cv2.TM_CCOEFF_NORMED)
+            # Template ist bereits Graustufe
+            res = cv2.matchTemplate(gray_screenshot, template_img, cv2.TM_CCOEFF_NORMED)
             min_val, max_val, min_loc, max_loc = cv2.minMaxLoc(res)
 
             if max_val >= threshold:
@@ -283,6 +311,7 @@ class VoiceEngine:
             return self._fallback_auto_find_quest_text(img)
 
         # Ermittle die Koordinaten des Dialogfensters (Bounding Box)
+        # Die min/max Logik stellt sicher, dass wir die äußersten Ränder erwischen
         final_x1 = min(found_positions["top_left"][0], found_positions["bottom_left"][0])
         final_y1 = min(found_positions["top_left"][1], found_positions["top_right"][1])
         final_x2 = max(found_positions["top_right"][0] + self.templates["top_right"].shape[1], 
@@ -381,10 +410,9 @@ class VoiceEngine:
         
         cv2.imwrite("last_detection_debug_fallback.png", final_image)
         
-        # Füge einfache Bildverbesserung hinzu, um sicherzustellen, dass die OCR im Fallback eine Chance hat
         gray_image = cv2.cvtColor(final_image, cv2.COLOR_BGR2GRAY)
         denoised = cv2.medianBlur(gray_image, 3)
-        return denoised # Gibt Graustufenbild zurück
+        return denoised
 
     def run_ocr(self):
         try:
@@ -392,25 +420,20 @@ class VoiceEngine:
             if img is None: 
                 return ""
 
+            # optimized_img ist ein binarisiertes oder Graustufenbild
             optimized_img = self.auto_find_quest_text(img)
             
-            config = r'--oem 3 --psm 6 -l deu+eng' 
+            # Tesseract-Konfiguration mit Whitelist zur Reduzierung von Falscherkennung (z.B. "u." statt "Ihr")
+            # Erlaubt sind: Buchstaben, Umlaute, Zahlen, gängige Satzzeichen
+            whitelist = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyzäöüÄÖÜß0123456789.,?!:;\'"()[]-/'
+            config = f'--oem 3 --psm 6 -l deu+eng -c tessedit_char_whitelist="{whitelist}"'
             
-            # OCR direkt auf dem optimierten, binarisierten Bild ausführen
             raw_text = pytesseract.image_to_string(optimized_img, config=config)
             
             lines = raw_text.split('\n')
             
-            cleaned_lines = []
-            for line in lines:
-                stripped = line.strip()
-                if not stripped: continue
-                
-                is_dialog_start_end = stripped.startswith(('"', "'")) or stripped.endswith(('"', "'"))
-                is_dialog_end_punc = stripped.endswith((".", "!", "?"))
-                
-                if (is_dialog_start_end or is_dialog_end_punc) or len(stripped) > 20:
-                    cleaned_lines.append(stripped)
+            # Verwendung der ausgelagerten Filterlogik
+            cleaned_lines = self._filter_recognized_lines(lines)
 
             clean_output = ' '.join(cleaned_lines)
             clean_output = re.sub(r'\s+', ' ', clean_output).strip()
