@@ -138,11 +138,14 @@ class VoiceEngine:
 
     def auto_find_quest_text(self, img):
         """ 
-        Findet Textblöcke, ignoriert dabei Farben (Gelb) und UI-Ränder.
+        Findet den Quest-Text dynamisch.
+        Strategie: 
+        1. Filtere nach WEISS (ignoriert Gelb).
+        2. Suche den größten Textblock auf der LINKEN Seite (Story).
         """
         h_img, w_img = img.shape[:2]
         
-        # 1. Sicherer Bereich (ROI) - Ränder ignorieren
+        # 1. Grober Ausschnitt (Ränder ignorieren)
         margin_top = int(h_img * 0.10)
         margin_bottom = int(h_img * 0.15)
         margin_lr = int(w_img * 0.10)
@@ -151,46 +154,54 @@ class VoiceEngine:
 
         roi = img[margin_top:h_img-margin_bottom, margin_lr:w_img-margin_lr]
         
-        # 2. FARB-FILTER (HSV) - Das ist der Trick gegen Gelb!
+        # 2. HSV Filter: Nur reines Weiß/Grau behalten
+        # Hohe Helligkeit, niedrige Sättigung -> Weiß
         hsv = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
-        
-        # Wir definieren "Weiß":
-        # Sättigung (Saturation): 0 bis 60 (Sehr niedrig -> keine Farbe)
-        # Helligkeit (Value): 150 bis 255 (Sehr hell)
-        lower_white = np.array([0, 0, 150])
-        upper_white = np.array([180, 60, 255])
-        
-        # Maske erstellen: Alles was NICHT weiß ist (Gelb, Blau etc.), wird schwarz
+        lower_white = np.array([0, 0, 160]) 
+        upper_white = np.array([180, 50, 255]) 
         mask = cv2.inRange(hsv, lower_white, upper_white)
         
-        # 3. Morphologie: Weiße Pixel zu Blöcken verbinden
-        kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (35, 5))
+        # 3. Verschmelzen
+        kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (25, 5))
         dilated = cv2.dilate(mask, kernel, iterations=2)
         
         contours, _ = cv2.findContours(dilated, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         
-        best_cnt = None
-        max_area = 0
+        # 4. Kandidaten filtern (Linke Seite bevorzugt)
+        candidates = []
+        roi_w = roi.shape[1]
+        mid_x = roi_w / 2
         
         for cnt in contours:
             x, y, w, h = cv2.boundingRect(cnt)
             area = w * h
             
-            if area < 10000: continue
-            if h > w * 3: continue # Zu schmal/hoch
-
-            if area > max_area:
-                max_area = area
-                best_cnt = cnt
+            if area < 5000: continue # Rauschen
+            
+            # Mittelpunkt des Blocks
+            center_x = x + (w / 2)
+            
+            # Ist der Block überwiegend auf der linken Seite?
+            # Wir erlauben, dass er leicht über die Mitte ragt (z.B. langer Text),
+            # aber der Schwerpunkt sollte links sein.
+            if center_x < (mid_x + roi_w * 0.1):
+                candidates.append((cnt, area))
         
-        if best_cnt is None:
-            # Fallback
-            return roi
+        if not candidates:
+            # Fallback: Wenn links nichts ist, nimm den größten überhaupt
+            if contours:
+                best_cnt = max(contours, key=cv2.contourArea)
+            else:
+                return roi
+        else:
+            # Nimm den größten Kandidaten von der linken Seite
+            candidates.sort(key=lambda x: x[1], reverse=True)
+            best_cnt = candidates[0][0]
 
-        # 4. Koordinaten auf Originalbild umrechnen
+        # 5. Koordinaten berechnen
         rx, ry, rw, rh = cv2.boundingRect(best_cnt)
         
-        pad = 10
+        pad = 15
         final_x = rx + margin_lr - pad
         final_y = ry + margin_top - pad
         final_w = rw + (pad*2)
@@ -203,16 +214,11 @@ class VoiceEngine:
         
         cropped = img[y1:y2, x1:x2]
         
-        # Debug Bilder
+        # Debug
         debug_full = img.copy()
-        # Zeige ROI (Blau)
-        cv2.rectangle(debug_full, (margin_lr, margin_top), (w_img-margin_lr, h_img-margin_bottom), (255, 0, 0), 2)
-        # Zeige Fund (Grün)
         cv2.rectangle(debug_full, (x1, y1), (x2, y2), (0, 255, 0), 3)
-        
         cv2.imwrite("last_detection_full_debug.png", debug_full)
         cv2.imwrite("last_detection_debug.png", cropped)
-        # Speichere auch die Maske, um zu sehen, ob der Filter funktioniert hat
         cv2.imwrite("last_detection_mask_debug.png", mask)
         
         return cropped
@@ -224,7 +230,7 @@ class VoiceEngine:
 
             optimized_img = self.auto_find_quest_text(img)
             
-            # OCR auf das gefilterte Bild
+            # OCR auf das Ergebnis
             gray = cv2.cvtColor(optimized_img, cv2.COLOR_BGR2GRAY)
             _, thresh = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
             
