@@ -1,12 +1,13 @@
 name: 🔨 Manuelle EXE-Erstellung (PyInstaller - Spec File)
 
+# Erlaubt das manuelle Starten des Workflows über die GitHub Actions UI.
 on:
   workflow_dispatch:
     inputs:
       tag_name:
         description: 'Version Tag (z.B. v3.0.0) für das Release-Asset'
         required: true
-        default: 'dev-build'
+        default: 'dev-build' # Standardwert für manuelle Builds
 
 jobs:
   build-windows-exe:
@@ -28,7 +29,8 @@ jobs:
         pip install pyinstaller opencv-python mss keyboard pygame requests Pillow 
 
     - name: 🔨 EXE mit PyInstaller Spec erstellen
-      # Führt PyInstaller mit der Spec-Datei aus. Diese enthält alle Pfad- und Datenanweisungen.
+      # Führt PyInstaller mit der Spec-Datei aus, was die Shell-Syntax-Fehler umgeht.
+      # Der Befehl ist kurz und benötigt keine Zeilenumbrüche.
       run: pyinstaller --onefile "LOTROVoiceCompanion.spec"
       
     - name: 📁 Ordner für Assets erstellen
@@ -37,7 +39,7 @@ jobs:
 
     - name: 📦 Asset umbenennen und kopieren
       run: |
-        # Die EXE wird nun in den Standard-Dist-Ordner erstellt, da wir --onefile in der Spec nutzen.
+        # Die erstellte EXE liegt in 'dist'
         $AssetName = "LOTROVoiceCompanion_${{ github.event.inputs.tag_name }}.exe"
         Copy-Item -Path "dist\LOTROVoiceCompanion.exe" -Destination "assets\$AssetName"
 
