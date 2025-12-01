@@ -127,17 +127,55 @@ class VoiceEngine:
         return []
 
     def get_npc_from_log(self):
+        """
+        Versucht, den NPC-Namen und das Geschlecht aus den letzten Zeilen des LOTRO-Skript-Logs zu extrahieren.
+        Sucht nach einem robusteren Muster.
+        """
         try:
             path = self.config.get("lotro_log_path", "")
-            if os.path.exists(path):
-                with open(path, "r", encoding="utf-8", errors="ignore") as f:
-                    lines = f.readlines()
-                    if lines:
-                        last = lines[-1].strip()
-                        gender = "Female" if any(x in last.lower() for x in ["female", "frau", "she"]) else "Male"
-                        return last, gender
-        except: pass
-        return "Unknown", "Unknown"
+            if not os.path.exists(path):
+                return "Unknown", "Unknown"
+
+            with open(path, "r", encoding="utf-8", errors="ignore") as f:
+                lines = f.readlines()
+                
+            # Wir suchen in den letzten 50 Zeilen (zur Sicherheit)
+            search_lines = lines[-50:] 
+            
+            # Regulärer Ausdruck, um NPC-Namen und Geschlecht/Anrede zu erkennen
+            # Muster: [HH:MM:SS] [NPC Name] sagt: ... (oder ähnliches)
+            # Wir suchen nach der letzten Zeile, die aussieht wie ein Dialog
+            dialog_pattern = re.compile(r"^\s*\[\d{2}:\d{2}:\d{2}\]\s*([^\]]+?)\s*sagt[:\.]", re.IGNORECASE)
+            
+            npc_name = "Unknown"
+            
+            for line in reversed(search_lines):
+                match = dialog_pattern.search(line)
+                if match:
+                    # Der NPC Name ist die erste gefangene Gruppe
+                    raw_name = match.group(1).strip()
+                    
+                    # Bereinigung: Entferne eventuelle Farb- oder Formatierungscodes (z.B. [Gegner])
+                    clean_name = re.sub(r'\[.*?\]', '', raw_name).strip()
+                    
+                    if clean_name:
+                        npc_name = clean_name
+                        break
+            
+            # Geschlechtserkennung (noch immer rudimentär, aber besser, wenn der Name gefunden wird)
+            gender = "Female" if any(x in npc_name.lower() for x in ["frau", "lady", "she"]) else "Male"
+
+            # Fallback auf die allerletzte Zeile, falls das Muster fehlschlägt (Original-Methode)
+            if npc_name == "Unknown" and lines:
+                 last = lines[-1].strip()
+                 gender = "Female" if any(x in last.lower() for x in ["female", "frau", "she"]) else "Male"
+                 return last, gender
+
+            return npc_name, gender
+
+        except Exception as e: 
+            log_message(f"Fehler bei NPC-Erkennung: {e}")
+            return "Unknown", "Unknown"
 
     def select_voice(self, npc_name, npc_gender):
         if not self.voices:
@@ -168,18 +206,20 @@ class VoiceEngine:
             
         if delay > 0: time.sleep(delay)
 
-        text_hash = hashlib.md5(text.encode('utf-8')).hexdigest()
+        npc_log, gender = self.get_npc_from_log()
+        name = npc_log if npc_log != "Unknown" else npc_name_fallback
+        
+        vid, method = self.select_voice(name, gender)
+
+        # NEU: HASH beinhaltet nun Voice ID, um bei Stimmwechsel neu zu generieren
+        cache_key = f"{text}_{vid}" 
+        text_hash = hashlib.md5(cache_key.encode('utf-8')).hexdigest()
         cache_file = os.path.join(self.cache_dir, f"quest_{text_hash}.mp3")
 
         if os.path.exists(cache_file):
             log_message("Spiele aus Cache...")
             threading.Thread(target=self._play_audio_thread, args=(cache_file,)).start()
             return
-
-        npc_log, gender = self.get_npc_from_log()
-        name = npc_log if npc_log != "Unknown" else npc_name_fallback
-        
-        vid, method = self.select_voice(name, gender)
         
         if method == "NOTFALL (Rachel)": 
             log_message(f"WARNUNG: Notfall-Stimme verwendet. API Key prüfen!")
@@ -209,11 +249,15 @@ class VoiceEngine:
             log_message(f"TTS Fehler: {e}")
             
     def _play_audio_thread(self, filepath):
-        """Spielt die Audiodatei im Hintergrund ab."""
+        """Spielt die Audiodatei im Hintergrund ab. Robusteres Mixer-Management."""
         try:
             if not pygame.mixer.get_init():
                  pygame.mixer.init()
                  
+            # Sicherstellen, dass nichts anderes spielt
+            if pygame.mixer.music.get_busy():
+                 pygame.mixer.music.stop() 
+
             pygame.mixer.music.load(filepath)
             pygame.mixer.music.play()
             
@@ -221,7 +265,6 @@ class VoiceEngine:
                 time.sleep(0.1)
                 
             pygame.mixer.music.unload()
-            pygame.mixer.quit()
 
         except Exception as e:
             log_message(f"Fehler beim Abspielen: {e}")
@@ -239,7 +282,8 @@ class VoiceEngine:
             
         try:
             with mss.mss() as sct:
-                if mon_idx >= len(sct.monitors): mon_idx = 1
+                # Sicherstellen, dass der Index gültig ist, ansonsten primären Monitor (1) verwenden
+                if mon_idx >= len(sct.monitors) or mon_idx < 1: mon_idx = 1 
                 monitor = sct.monitors[mon_idx]
                 sct_img = sct.grab(monitor)
                 img = np.array(sct_img)
@@ -354,7 +398,9 @@ class VoiceEngine:
                                               cv2.ADAPTIVE_THRESH_GAUSSIAN_C, 
                                               cv2.THRESH_BINARY, 11, 2)
         
-        cv2.imwrite("last_detection_debug.png", optimized_img)
+        # NEU: Debug-Speicherung des verarbeiteten Bildes
+        if self.config.get("debug_mode", False):
+            cv2.imwrite("last_detection_debug_optimized.png", optimized_img)
         
         return optimized_img # Rückgabe des binarisierten (Schwarz-Weiß) Bildes
 
@@ -412,7 +458,9 @@ class VoiceEngine:
         
         final_image = self.crop_to_content(masked_image)
         
-        cv2.imwrite("last_detection_debug_fallback.png", final_image)
+        # NEU: Debug-Speicherung des verarbeiteten Bildes im Fallback
+        if self.config.get("debug_mode", False):
+            cv2.imwrite("last_detection_debug_fallback.png", final_image)
         
         gray_image = cv2.cvtColor(final_image, cv2.COLOR_BGR2GRAY)
         denoised = cv2.medianBlur(gray_image, 3)
@@ -423,14 +471,22 @@ class VoiceEngine:
             img = self.get_monitor_screenshot()
             if img is None: 
                 return ""
+            
+            # NEU: Debug-Speicherung des Original-Screenshots
+            if self.config.get("debug_mode", False):
+                cv2.imwrite("last_screenshot_debug_original.png", img)
 
             # optimized_img ist ein binarisiertes oder Graustufenbild
             optimized_img = self.auto_find_quest_text(img)
             
-            # Tesseract-Konfiguration mit Whitelist zur Reduzierung von Falscherkennung (z.B. "u." statt "Ihr")
-            # Erlaubt sind: Buchstaben, Umlaute, Zahlen, gängige Satzzeichen
-            whitelist = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyzäöüÄÖÜß0123456789.,?!:;\'"()[]-/'
-            config = f'--oem 3 --psm 6 -l deu+eng -c tessedit_char_whitelist="{whitelist}"'
+            # NEU: Dynamische Tesseract-Konfiguration
+            ocr_lang = self.config.get("ocr_language", "deu+eng")
+            ocr_psm = self.config.get("ocr_psm", 6)
+            
+            # Whitelist zur Reduzierung von Falscherkennung (Buchstaben, Umlaute, Zahlen, gängige Satzzeichen)
+            whitelist = self.config.get("ocr_whitelist", 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyzäöüÄÖÜß0123456789.,?!:;\'"()[]-/')
+
+            config = f'--oem 3 --psm {ocr_psm} -l {ocr_lang} -c tessedit_char_whitelist="{whitelist}"'
             
             raw_text = pytesseract.image_to_string(optimized_img, config=config)
             
@@ -442,6 +498,9 @@ class VoiceEngine:
             clean_output = ' '.join(cleaned_lines)
             clean_output = re.sub(r'\s+', ' ', clean_output).strip()
             
+            # NEU: Generischere Bereinigung von OCR-Artefakten
+            # Entferne häufige Fehler bei Leerzeichen/I/l/1-Kombinationen am Wortanfang/-ende
+            clean_output = re.sub(r'(?:l|I|1)oo|o(?:l|I|1)|oo(?:l|I|1)', '', clean_output, flags=re.IGNORECASE) 
             clean_output = re.sub(r'oo|Oo|oO|Solo|solo|NYZ B|„Aa 1', '', clean_output)
             clean_output = re.sub(r'‘', "'", clean_output)
             
@@ -449,6 +508,7 @@ class VoiceEngine:
                 return ""
             
             try:
+                # Speichern des erkannten Textes
                 with open("last_recognized_text.txt", "w", encoding="utf-8") as f:
                     f.write("--- RAW TESSERACT OUTPUT ---\n")
                     f.write(raw_text)
