@@ -29,28 +29,16 @@ jobs:
         pip install pyinstaller opencv-python mss keyboard pygame requests Pillow 
 
     - name: 🔨 EXE mit PyInstaller erstellen
-      run: |
-        # Die --onefile Option erstellt eine einzelne EXE.
-        # --name gibt der EXE den Namen "LOTROVoiceCompanion".
-        # --add-data: Die Syntax ';templates' ist für die Einbindung des Ordners 'templates' aus dem Root-Verzeichnis korrekt.
-        # Da der Quellcode in V3 liegt, geben wir V3/main.py als Einstiegspunkt an.
-        pyinstaller --onefile ^
-                    --name "LOTROVoiceCompanion" ^
-                    --specpath "build_spec" ^
-                    --distpath "build_dist" ^
-                    --workpath "build_work" ^
-                    --add-data "templates;templates" ^
-                    "V3/main.py"
-      # Hinweis: Da der Code in V3 liegt, werden die relativen Imports (from .core import...)
-      # von PyInstaller korrekt aufgelöst, da V3/main.py als Paket-Einstiegspunkt behandelt wird.
-
+      # NEU: Der gesamte Befehl wird in einer einzigen Zeile ausgeführt, um Probleme mit Zeilenumbrüchen zu vermeiden.
+      run: pyinstaller --onefile --name "LOTROVoiceCompanion" --specpath "build_spec" --distpath "build_dist" --workpath "build_work" --add-data "templates;templates" "V3/main.py"
+      
     - name: 📁 Ordner für Assets erstellen
       run: |
         mkdir assets
 
     - name: 📦 Asset umbenennen und kopieren
       run: |
-        # Benenne die erstellte EXE um, um den Tag im Dateinamen zu haben
+        # Die PowerShell-Variable $AssetName wird gesetzt, um den Tag im Dateinamen zu haben
         $AssetName = "LOTROVoiceCompanion_${{ github.event.inputs.tag_name }}.exe"
         Copy-Item -Path "build_dist\LOTROVoiceCompanion.exe" -Destination "assets\$AssetName"
 
@@ -59,4 +47,4 @@ jobs:
       with:
         name: lotro-voice-companion-exe
         path: assets/
-        retention-days: 7  # Speichert das Artefakt für 7 Tage auf GitHub
+        retention-days: 7
