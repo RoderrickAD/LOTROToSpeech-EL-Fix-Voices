@@ -25,11 +25,11 @@ jobs:
     - name: 📦 Abhängigkeiten installieren
       run: |
         python -m pip install --upgrade pip
-        # Installiere alle notwendigen Bibliotheken für den Build
         pip install pyinstaller opencv-python mss keyboard pygame requests Pillow 
 
     - name: 🔨 EXE mit PyInstaller erstellen
-      # NEU: Der gesamte Befehl wird in einer einzigen Zeile ausgeführt, um Probleme mit Zeilenumbrüchen zu vermeiden.
+      # Durch die einzeilige Ausführung werden Probleme mit PowerShell-Zeilenumbrüchen (^) vermieden.
+      # Wir nutzen die ; Trennung in add-data, da dies die PyInstaller-Standardmethode auf Windows ist.
       run: pyinstaller --onefile --name "LOTROVoiceCompanion" --specpath "build_spec" --distpath "build_dist" --workpath "build_work" --add-data "templates;templates" "V3/main.py"
       
     - name: 📁 Ordner für Assets erstellen
