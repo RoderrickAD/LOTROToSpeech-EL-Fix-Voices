@@ -2,29 +2,30 @@
 import os
 import sys
 
-# Füge das V3-Verzeichnis zum Suchpfad hinzu, damit PyInstaller die Imports findet
+# 1. Fügt das V3-Verzeichnis zum Suchpfad hinzu, damit PyInstaller die relativen Imports findet
+#    Wir verwenden den Pfad, in dem die Spec-Datei liegt.
 sys.path.append(os.path.join(os.path.dirname(__file__), 'V3'))
 
 # Definiere den Haupt-Einstiegspunkt
 block_cipher = None
 
 # A. Analyse: Analysiere V3/main.py und alle abhängigen Dateien.
-# hiddenimports: Manuelle Auflistung von Bibliotheken, die PyInstaller oft vergisst (z.B. cv2/mss-Module)
 a = Analysis(
+    # Einstiegspunkt
     ['V3/main.py'],
-    pathex=['.'], # Starte die Suche im aktuellen Verzeichnis
+    pathex=['.'], # Starte die Suche im aktuellen Verzeichnis (Root)
     binaries=[],
     datas=[
-        # Füge den gesamten "templates" Ordner hinzu
+        # Füge den gesamten "templates" Ordner hinzu (Quelle, Zielordner in der EXE)
         ('templates', 'templates'),
         
-        # Füge alle Python-Dateien aus V3 als versteckte Daten hinzu, 
-        # um sicherzustellen, dass PyInstaller die relativen Imports erkennt
+        # Manuelle Einbindung der Python-Module aus V3 (Sicherheit für relative Imports)
         ('V3/core.py', 'V3'),
         ('V3/ocr_service.py', 'V3'),
         ('V3/tts_service.py', 'V3'),
         ('V3/utils.py', 'V3'),
     ],
+    # Hidden Imports für Bibliotheken, die PyInstaller oft vergisst
     hiddenimports=['cv2', 'numpy', 'pytesseract', 'mss', 'pygame'],
     hookspath=[],
     runtime_hooks=[],
@@ -54,5 +55,5 @@ exe = EXE(
     upx=True,
     upx_exclude=[],
     runtime_tmpdir=None,
-    console=True  # Behalte die Konsole bei, um Logs zu sehen
+    console=True # Zeigt die Konsole (für das Log-Fenster)
 )
