@@ -3,7 +3,7 @@ import os
 import datetime
 
 CONFIG_FILE = "config.json"
-MAPPING_FILE = "voice_mapping.json" # WIEDERHERGESTELLT
+MAPPING_FILE = "voice_mapping.json" 
 LOG_FILE = "app.log"
 
 DEFAULT_CONFIG = {
@@ -14,7 +14,11 @@ DEFAULT_CONFIG = {
     "hotkey": "ctrl+alt+s",
     "monitor_index": 1, 
     "audio_delay": 0.5,  
-    "debug_mode": False 
+    "debug_mode": False, 
+    # NEU: Dynamische OCR-Einstellungen
+    "ocr_language": "deu+eng", 
+    "ocr_psm": 6, 
+    "ocr_whitelist": 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyzäöüÄÖÜß0123456789.,?!:;\'"()[]-/' 
 }
 
 def load_config():
@@ -24,6 +28,7 @@ def load_config():
     try:
         with open(CONFIG_FILE, "r", encoding="utf-8") as f:
             data = json.load(f)
+            # Füllt fehlende Keys aus DEFAULT_CONFIG auf (wichtig für neue Einstellungen)
             for key, val in DEFAULT_CONFIG.items():
                 if key not in data:
                     data[key] = val
