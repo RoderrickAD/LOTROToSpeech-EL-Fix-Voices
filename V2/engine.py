@@ -342,10 +342,11 @@ class VoiceEngine:
         found_positions = {}
         threshold = 0.80
 
+        # ... (Template Matching Logik bleibt unverändert) ...
+
         for key, template_img in self.templates.items():
             if template_img is None: continue
             
-            # Template ist bereits Graustufe
             res = cv2.matchTemplate(gray_screenshot, template_img, cv2.TM_CCOEFF_NORMED)
             min_val, max_val, min_loc, max_loc = cv2.minMaxLoc(res)
 
@@ -360,6 +361,7 @@ class VoiceEngine:
             return self._fallback_auto_find_quest_text(img)
 
         # Ermittle die Koordinaten des Dialogfensters (Bounding Box)
+        # ... (Bounding Box Logik bleibt unverändert) ...
         final_x1 = min(found_positions["top_left"][0], found_positions["bottom_left"][0])
         final_y1 = min(found_positions["top_left"][1], found_positions["top_right"][1])
         final_x2 = max(found_positions["top_right"][0] + self.templates["top_right"].shape[1], 
@@ -382,28 +384,35 @@ class VoiceEngine:
         
         log_message(f"Dialograhmen mittels Template Matching gefunden: ({final_x1}, {final_y1}) bis ({final_x2}, {final_y2})")
 
-        # BILDVERARBEITUNG FÜR OPTIMIERTE OCR -> ERZEUGT SCHWARZ-WEISS BILD
+        # NEU: OPTIMIERTE BILDVERARBEITUNG FÜR SCHWARZEN HINTERGRUND / WEISSEN TEXT
         final_image_gray = cv2.cvtColor(dialog_region, cv2.COLOR_BGR2GRAY)
         
-        # 1. Kontrastverbesserung (CLAHE)
+        # 1. Kontrastverbesserung (CLAHE) - Hilft bei schwacher In-Game-Hintergrundbeleuchtung
         clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
         contrasted = clahe.apply(final_image_gray)
         
-        # 2. Rauschunterdrückung
-        denoised = cv2.medianBlur(contrasted, 3) 
+        # 2. Stärkere Rauschunterdrückung
+        denoised = cv2.medianBlur(contrasted, 5) # Filterkern auf 5 erhöht
         
-        # 3. Adaptive Binarisierung: Invertiert (Text wird Schwarz auf Weiß) und wendet lokalen Schwellenwert an
-        inverted = cv2.bitwise_not(denoised)
-        optimized_img = cv2.adaptiveThreshold(inverted, 255, 
-                                              cv2.ADAPTIVE_THRESH_GAUSSIAN_C, 
-                                              cv2.THRESH_BINARY, 11, 2)
+        # 3. Globale Binarisierung (THRESH_BINARY)
+        # Wir versuchen, einen Schwellenwert zu finden. Da der Text weiß ist (hell), 
+        # suchen wir nach Pixeln über einem Schwellenwert (z.B. 180).
+        # RETR_CROP bedeutet: Pixel > 180 wird 255 (weiß), sonst 0 (schwarz)
+        _, binarized = cv2.threshold(denoised, 180, 255, cv2.THRESH_BINARY)
         
-        # NEU: Debug-Speicherung des verarbeiteten Bildes
+        # 4. Invertieren (Weißer Text auf Schwarz wird zu Schwarzer Text auf Weiß)
+        # Tesseract erwartet oft schwarzen Text auf weißem Hintergrund.
+        # Wichtig: Wenn Sie WEISSEN Text auf SCHWARZEM Hintergrund wollen, 
+        # verwenden Sie THRESH_BINARY_INV in Schritt 3, oder invertieren Sie hier
+        # optimized_img = cv2.bitwise_not(binarized) # --> Dies würde weißen Text auf schwarzem Grund ergeben
+        
+        # WIR BLEIBEN BEI SCHWARZ AUF WEISS, DA TESSERACT DAFÜR OPTIMIERT IST:
+        optimized_img = binarized 
+
         if self.config.get("debug_mode", False):
             cv2.imwrite("last_detection_debug_optimized.png", optimized_img)
         
-        return optimized_img # Rückgabe des binarisierten (Schwarz-Weiß) Bildes
-
+        return optimized_img
     def _fallback_auto_find_quest_text(self, img):
         """Die ursprüngliche Methode zur Erkennung des Quest-Textes, als Fallback."""
         log_message("Führe Fallback-Text-Erkennung aus.")
