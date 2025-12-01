@@ -1,8 +1,0 @@
-en-AU-NatashaNeural
-en-CA-ClaraNeural
-en-GB-LibbyNeural
-en-GB-SoniaNeural
-en-US-AriaNeural
-en-US-AnaNeural
-en-US-JennyNeural
-en-US-MichelleNeural

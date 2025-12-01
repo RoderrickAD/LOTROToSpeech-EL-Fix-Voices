@@ -1,9 +1,0 @@
-en-AU-WilliamNeural
-en-CA-LiamNeural
-en-GB-RyanNeural
-en-GB-ThomasNeural
-en-US-ChristopherNeural
-en-US-EricNeural
-en-US-GuyNeural
-en-US-RogerNeural
-en-US-SteffanNeural
