@@ -34,7 +34,7 @@ class LotroApp:
         self.engine = VoiceEngine()
         self.running = False
         self.hotkey_hook = None
-        self.old_log_content = "" # Zum Speichern des Logs für Log-Anzeige
+        self.old_log_content = "" 
 
         # Custom Notebook (Tabs)
         self.notebook = ttk.Notebook(root)
@@ -52,7 +52,7 @@ class LotroApp:
 
         self.load_settings_to_ui()
         self.register_hotkey()
-        self.update_log_preview() # Starte Log-Vorschau-Aktualisierung
+        self.update_log_preview()
 
     def setup_styles(self):
         style = ttk.Style()
@@ -117,8 +117,8 @@ class LotroApp:
         # Rechter Container (Steuerung und Log) - Feste Breite
         right_frame = tk.Frame(master_content_frame, bg=COLOR_BG_FRAME, bd=2, relief="groove")
         right_frame.pack(side="right", fill="y", padx=(10, 5), pady=5, anchor="n") 
-        right_frame.config(width=350) # Feste Breite für Steuerung/Log
-        right_frame.pack_propagate(False) # Verhindert, dass der Frame schrumpft
+        right_frame.config(width=350)
+        right_frame.pack_propagate(False) 
         
         # --- LINKER BEREICH: TEXT VORSCHAU ---
         
@@ -160,7 +160,7 @@ class LotroApp:
 
         ttk.Label(log_container, text="System-Log Vorschau:", style="LogHeader.TLabel").pack(anchor="w", pady=(10, 5))
         
-        # Log-Widget: Kleinere Höhe, da der Haupttextbereich wichtiger ist
+        # Log-Widget
         self.log_widget = scrolledtext.ScrolledText(log_container, state='disabled', height=15, bg=COLOR_ENTRY_BG, fg="#a0a0a0", font=FONT_MONO, relief="flat")
         self.log_widget.pack(fill="both", expand=True)
 
@@ -184,7 +184,7 @@ class LotroApp:
         canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
         canvas.configure(yscrollcommand=scrollbar.set)
 
-        canvas.pack(side="top", fill="both", expand=True) # Canvas füllt den Bereich
+        canvas.pack(side="top", fill="both", expand=True) 
         scrollbar.pack(side="right", fill="y")
         
         # Helferfunktion für Einträge im scrollable_frame
@@ -194,6 +194,13 @@ class LotroApp:
             if show: entry.config(show=show)
             entry.pack(fill="x", pady=2, ipady=3)
             return entry
+        
+        # Helferfunktion für Text-Feld im scrollable_frame (für die Whitelist)
+        def create_text_field(parent_frame, label_text):
+            ttk.Label(parent_frame, text=label_text).pack(anchor="w", pady=(10, 2))
+            text_field = tk.Text(parent_frame, height=3, bg=COLOR_ENTRY_BG, fg=COLOR_TEXT_SILVER, insertbackground="white", font=FONT_MONO, relief="flat", bd=5, padx=5, pady=5)
+            text_field.pack(fill="x", pady=2)
+            return text_field
 
         # Sektion 1: API & Audio
         api_frame = tk.LabelFrame(scrollable_frame, text="ElevenLabs API & Audio Konfiguration", bg=COLOR_BG_FRAME, fg=COLOR_TEXT_GOLD, font=FONT_BOLD, padx=15, pady=15)
@@ -215,29 +222,34 @@ class LotroApp:
         self.cmb_monitor.pack(fill="x", pady=2, ipady=3)
         self.cmb_monitor.set("1")
 
+        # NEUE OCR-EINSTELLUNGEN
+        ocr_advanced_frame = tk.LabelFrame(scrollable_frame, text="OCR Detail-Konfiguration (Nur für Experten)", bg=COLOR_BG_FRAME, fg=COLOR_TEXT_GOLD, font=FONT_BOLD, padx=15, pady=15)
+        ocr_advanced_frame.pack(fill="x", pady=(15, 15), padx=5)
+        
+        self.ent_ocr_lang = create_entry(ocr_advanced_frame, "Tesseract Sprachen (z.B. deu+eng):")
+        self.ent_ocr_psm = create_entry(ocr_advanced_frame, "Tesseract PSM Modus (Standard: 6):")
+        self.txt_ocr_whitelist = create_text_field(ocr_advanced_frame, "Tesseract Whitelist (Erlaubte Zeichenkette):")
+
         # Debug Checkbox (außerhalb der LabelFrames)
         self.var_debug = tk.BooleanVar()
-        ttk.Checkbutton(scrollable_frame, text="Debug-Bilder (last_detection_debug.png) speichern", 
+        ttk.Checkbutton(scrollable_frame, text="Debug-Bilder (Screenshots/Verarbeitung) speichern", 
                         variable=self.var_debug, style="Check.TCheckbutton").pack(anchor="w", pady=15, padx=5)
         
         # Button am unteren Rand (immer sichtbar, außerhalb des Scroll-Containers)
-        self.create_lotro_button(container, "💾 Einstellungen Speichern & Stimmen aktualisieren", self.save_settings).pack(pady=(10, 0), fill="x")
-
+        self.btn_save = self.create_lotro_button(container, "💾 Einstellungen Speichern & Stimmen aktualisieren", self.save_settings)
+        self.btn_save.pack(pady=(10, 0), fill="x")
 
     # --- FUNKTIONEN ---
     
     def log(self, msg):
         log_message(msg)
-        # GUI Log-Update wird durch update_log_preview() erledigt
     
     def update_log_preview(self):
         """ Aktualisiert das Log-Widget, indem app.log gelesen wird. """
         try:
-            # WIEDERHERGESTELLTE FUNKTION, DA SIE NÖTIG IST
             with open("app.log", "r", encoding="utf-8") as f:
                 current_content = f.read()
             
-            # Nur aktualisieren, wenn sich der Inhalt geändert hat
             if current_content != self.old_log_content:
                 self.log_widget.config(state='normal')
                 self.log_widget.delete(1.0, tk.END)
@@ -247,24 +259,25 @@ class LotroApp:
                 self.old_log_content = current_content
                 
         except FileNotFoundError:
-            pass # Ignoriere, wenn app.log noch nicht existiert
+            pass 
         except Exception as e:
             self.log_widget.config(state='normal')
             self.log_widget.insert(tk.END, f"\nFehler beim Lesen der Log-Datei: {e}")
             self.log_widget.config(state='disabled')
 
-        # Starte den nächsten Update-Zyklus
         self.root.after(1000, self.update_log_preview)
 
 
     def load_settings_to_ui(self):
         cfg = self.engine.config
-        self.ent_api_key.delete(0, tk.END) # Sicherstellen, dass Felder leer sind
-        self.ent_tesseract.delete(0, tk.END)
-        self.ent_logpath.delete(0, tk.END)
-        self.ent_hotkey.delete(0, tk.END)
-        self.ent_delay.delete(0, tk.END)
         
+        # Felder leeren
+        fields = [self.ent_api_key, self.ent_tesseract, self.ent_logpath, self.ent_hotkey, self.ent_delay, self.ent_ocr_lang, self.ent_ocr_psm]
+        for field in fields:
+            field.delete(0, tk.END)
+        self.txt_ocr_whitelist.delete(1.0, tk.END)
+
+        # Werte einfügen
         self.ent_api_key.insert(0, cfg.get("api_key", ""))
         self.ent_tesseract.insert(0, cfg.get("tesseract_path", ""))
         self.ent_logpath.insert(0, cfg.get("lotro_log_path", ""))
@@ -272,6 +285,12 @@ class LotroApp:
         self.ent_delay.insert(0, str(cfg.get("audio_delay", 0.5)))
         self.cmb_monitor.set(str(cfg.get("monitor_index", 1)))
         self.var_debug.set(cfg.get("debug_mode", False))
+        
+        # NEUE OCR-WERTE
+        self.ent_ocr_lang.insert(0, cfg.get("ocr_language", "deu+eng"))
+        self.ent_ocr_psm.insert(0, str(cfg.get("ocr_psm", 6)))
+        self.txt_ocr_whitelist.insert(1.0, cfg.get("ocr_whitelist", 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyzäöüÄÖÜß0123456789.,?!:;\'"()[]-/'))
+        
         self.lbl_hotkey.config(text=f"Hotkey: {cfg.get('hotkey', 'ctrl+alt+s')}")
 
     def save_settings(self):
@@ -284,17 +303,23 @@ class LotroApp:
         cfg["hotkey"] = new_hotkey
         self.lbl_hotkey.config(text=f"Hotkey: {new_hotkey}")
 
+        # NEUE OCR-WERTE speichern
+        cfg["ocr_language"] = self.ent_ocr_lang.get().strip()
+        cfg["ocr_whitelist"] = self.txt_ocr_whitelist.get(1.0, tk.END).strip()
+
         try:
             cfg["audio_delay"] = float(self.ent_delay.get().strip())
             cfg["monitor_index"] = int(self.cmb_monitor.get())
             cfg["debug_mode"] = self.var_debug.get()
+            cfg["ocr_psm"] = int(self.ent_ocr_psm.get().strip())
         except ValueError:
-            messagebox.showerror("Fehler", "Zahlenformat (Verzögerung/Monitor) ist falsch.")
+            messagebox.showerror("Fehler", "Zahlenformat (Verzögerung/Monitor/PSM) ist falsch.")
             return
 
         save_config(cfg)
         self.engine.config = cfg
-        self.engine.pytesseract.pytesseract.tesseract_cmd = cfg["tesseract_path"] # Tesseract Pfad direkt aktualisieren
+        # Tesseract-Pfad in der Engine neu setzen, falls er geändert wurde
+        self.engine.pytesseract.pytesseract.tesseract_cmd = cfg["tesseract_path"] 
         self.register_hotkey()
         
         # Starte Stimmen-Aktualisierung asynchron
@@ -314,7 +339,6 @@ class LotroApp:
 
     def run_once_manual(self):
         """ Scannt und liest vor (Einmalig) """
-        # Setze Status auf 'Scanne...' mit Gold-Farbe
         self.lbl_status.config(text="Status: Scanne...", style="Status.TLabel", foreground=COLOR_TEXT_GOLD) 
         self.log("Manuelle Scan-Anforderung erhalten.")
         threading.Thread(target=self.process_pipeline, daemon=True).start()
@@ -327,7 +351,6 @@ class LotroApp:
             
             if not txt or len(txt) < 5:
                 self.log("Kein Text gefunden (OCR-Ergebnis zu kurz oder leer).")
-                # Setze Status auf 'Kein Text gefunden' mit Akzentfarbe
                 self.root.after(0, lambda: self.lbl_status.config(text="Status: Kein Text gefunden", style="Status.TLabel", foreground=COLOR_ACCENT)) 
                 self.root.after(0, lambda: self.update_text_preview("--- Kein verwertbarer Dialogtext gefunden ---"))
                 return
@@ -338,16 +361,13 @@ class LotroApp:
             self.root.after(0, lambda: self.update_text_preview(txt))
             
             # 2. Audio generieren
-            # Setze Status auf 'Generiere Audio...' mit Blau-ähnlicher Farbe
             self.root.after(0, lambda: self.lbl_status.config(text="Status: Generiere Audio...", style="Status.TLabel", foreground="#4facfe")) 
             self.engine.generate_and_play(txt, "Unknown")
             
-            # Setze Status auf 'Fertig' mit Grün
             self.root.after(0, lambda: self.lbl_status.config(text="Status: Fertig (Bereit)", style="Status.TLabel", foreground="#4caf50"))
             
         except Exception as e:
             self.log(f"FEHLER in der Pipeline: {e}")
-            # Setze Status auf 'FEHLER' mit Akzentfarbe
             self.root.after(0, lambda: self.lbl_status.config(text="Status: FEHLER", style="Status.TLabel", foreground=COLOR_ACCENT))
 
     def update_text_preview(self, txt):
