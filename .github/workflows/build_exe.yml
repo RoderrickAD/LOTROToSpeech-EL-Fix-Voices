@@ -1,6 +1,5 @@
 name: 🔨 Manuelle EXE-Erstellung (PyInstaller)
 
-# Erlaubt das manuelle Starten des Workflows über die GitHub Actions UI.
 on:
   workflow_dispatch:
     inputs:
@@ -11,7 +10,7 @@ on:
 
 jobs:
   build-windows-exe:
-    runs-on: windows-latest  # Windows-Umgebung für eine Windows-EXE
+    runs-on: windows-latest
 
     steps:
     - name: ⬇️ Repository auschecken
@@ -28,9 +27,17 @@ jobs:
         pip install pyinstaller opencv-python mss keyboard pygame requests Pillow 
 
     - name: 🔨 EXE mit PyInstaller erstellen
-      # Durch die einzeilige Ausführung werden Probleme mit PowerShell-Zeilenumbrüchen (^) vermieden.
-      # Wir nutzen die ; Trennung in add-data, da dies die PyInstaller-Standardmethode auf Windows ist.
-      run: pyinstaller --onefile --name "LOTROVoiceCompanion" --specpath "build_spec" --distpath "build_dist" --workpath "build_work" --add-data "templates;templates" "V3/main.py"
+      # NEU: explizite Angabe der Shell als cmd.exe, um die Windows-Syntax (^) zu erlauben.
+      # Dadurch können wir den Befehl auch wieder übersichtlicher gestalten.
+      shell: cmd
+      run: |
+        pyinstaller --onefile ^
+                    --name "LOTROVoiceCompanion" ^
+                    --specpath "build_spec" ^
+                    --distpath "build_dist" ^
+                    --workpath "build_work" ^
+                    --add-data "templates;templates" ^
+                    "V3/main.py"
       
     - name: 📁 Ordner für Assets erstellen
       run: |
@@ -38,7 +45,7 @@ jobs:
 
     - name: 📦 Asset umbenennen und kopieren
       run: |
-        # Die PowerShell-Variable $AssetName wird gesetzt, um den Tag im Dateinamen zu haben
+        # Dieser Schritt läuft in PowerShell, aber die Pfade sind Standard
         $AssetName = "LOTROVoiceCompanion_${{ github.event.inputs.tag_name }}.exe"
         Copy-Item -Path "build_dist\LOTROVoiceCompanion.exe" -Destination "assets\$AssetName"
 
