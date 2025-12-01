@@ -144,7 +144,6 @@ class VoiceEngine:
             
             # Regulärer Ausdruck, um NPC-Namen und Geschlecht/Anrede zu erkennen
             # Muster: [HH:MM:SS] [NPC Name] sagt: ... (oder ähnliches)
-            # Wir suchen nach der letzten Zeile, die aussieht wie ein Dialog
             dialog_pattern = re.compile(r"^\s*\[\d{2}:\d{2}:\d{2}\]\s*([^\]]+?)\s*sagt[:\.]", re.IGNORECASE)
             
             npc_name = "Unknown"
@@ -211,7 +210,7 @@ class VoiceEngine:
         
         vid, method = self.select_voice(name, gender)
 
-        # NEU: HASH beinhaltet nun Voice ID, um bei Stimmwechsel neu zu generieren
+        # HASH beinhaltet nun Voice ID, um bei Stimmwechsel neu zu generieren
         cache_key = f"{text}_{vid}" 
         text_hash = hashlib.md5(cache_key.encode('utf-8')).hexdigest()
         cache_file = os.path.join(self.cache_dir, f"quest_{text_hash}.mp3")
@@ -342,11 +341,10 @@ class VoiceEngine:
         found_positions = {}
         threshold = 0.80
 
-        # ... (Template Matching Logik bleibt unverändert) ...
-
         for key, template_img in self.templates.items():
             if template_img is None: continue
             
+            # Template ist bereits Graustufe
             res = cv2.matchTemplate(gray_screenshot, template_img, cv2.TM_CCOEFF_NORMED)
             min_val, max_val, min_loc, max_loc = cv2.minMaxLoc(res)
 
@@ -361,7 +359,6 @@ class VoiceEngine:
             return self._fallback_auto_find_quest_text(img)
 
         # Ermittle die Koordinaten des Dialogfensters (Bounding Box)
-        # ... (Bounding Box Logik bleibt unverändert) ...
         final_x1 = min(found_positions["top_left"][0], found_positions["bottom_left"][0])
         final_y1 = min(found_positions["top_left"][1], found_positions["top_right"][1])
         final_x2 = max(found_positions["top_right"][0] + self.templates["top_right"].shape[1], 
@@ -384,35 +381,32 @@ class VoiceEngine:
         
         log_message(f"Dialograhmen mittels Template Matching gefunden: ({final_x1}, {final_y1}) bis ({final_x2}, {final_y2})")
 
-        # NEU: OPTIMIERTE BILDVERARBEITUNG FÜR SCHWARZEN HINTERGRUND / WEISSEN TEXT
+        # KORRIGIERTE BILDVERARBEITUNG FÜR OPTIMIERTE OCR (SCHWARZ AUF WEISS)
         final_image_gray = cv2.cvtColor(dialog_region, cv2.COLOR_BGR2GRAY)
         
-        # 1. Kontrastverbesserung (CLAHE) - Hilft bei schwacher In-Game-Hintergrundbeleuchtung
+        # 1. Kontrastverbesserung (CLAHE)
         clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
         contrasted = clahe.apply(final_image_gray)
         
         # 2. Stärkere Rauschunterdrückung
-        denoised = cv2.medianBlur(contrasted, 5) # Filterkern auf 5 erhöht
+        denoised = cv2.medianBlur(contrasted, 3) 
         
-        # 3. Globale Binarisierung (THRESH_BINARY)
-        # Wir versuchen, einen Schwellenwert zu finden. Da der Text weiß ist (hell), 
-        # suchen wir nach Pixeln über einem Schwellenwert (z.B. 180).
-        # RETR_CROP bedeutet: Pixel > 180 wird 255 (weiß), sonst 0 (schwarz)
-        _, binarized = cv2.threshold(denoised, 180, 255, cv2.THRESH_BINARY)
-        
-        # 4. Invertieren (Weißer Text auf Schwarz wird zu Schwarzer Text auf Weiß)
-        # Tesseract erwartet oft schwarzen Text auf weißem Hintergrund.
-        # Wichtig: Wenn Sie WEISSEN Text auf SCHWARZEM Hintergrund wollen, 
-        # verwenden Sie THRESH_BINARY_INV in Schritt 3, oder invertieren Sie hier
-        # optimized_img = cv2.bitwise_not(binarized) # --> Dies würde weißen Text auf schwarzem Grund ergeben
-        
-        # WIR BLEIBEN BEI SCHWARZ AUF WEISS, DA TESSERACT DAFÜR OPTIMIERT IST:
-        optimized_img = binarized 
+        # 3. Adaptive Binarisierung: Ideal für kontrastarme, texturierte Hintergründe.
+        # THRESH_BINARY: Isoliert helle Pixel (Text)
+        optimized_img = cv2.adaptiveThreshold(denoised, 255, 
+                                              cv2.ADAPTIVE_THRESH_GAUSSIAN_C, 
+                                              cv2.THRESH_BINARY, 
+                                              15, # Größere Blockgröße zur Glättung des Hintergrundrauschens
+                                              2) 
 
-        if self.config.get("debug_mode", False):
-            cv2.imwrite("last_detection_debug_optimized.png", optimized_img)
+        # 4. Inversion: Erzeugt SCHWARZEN TEXT auf WEISSEM GRUND (optimal für Tesseract)
+        optimized_img = cv2.bitwise_not(optimized_img)
         
-        return optimized_img
+        if self.config.get("debug_mode", False):
+            cv2.imwrite("last_detection_debug_corrected.png", optimized_img)
+        
+        return optimized_img 
+
     def _fallback_auto_find_quest_text(self, img):
         """Die ursprüngliche Methode zur Erkennung des Quest-Textes, als Fallback."""
         log_message("Führe Fallback-Text-Erkennung aus.")
@@ -467,7 +461,6 @@ class VoiceEngine:
         
         final_image = self.crop_to_content(masked_image)
         
-        # NEU: Debug-Speicherung des verarbeiteten Bildes im Fallback
         if self.config.get("debug_mode", False):
             cv2.imwrite("last_detection_debug_fallback.png", final_image)
         
@@ -481,18 +474,15 @@ class VoiceEngine:
             if img is None: 
                 return ""
             
-            # NEU: Debug-Speicherung des Original-Screenshots
             if self.config.get("debug_mode", False):
+                # Verwende einen temporären Namen für das Original, falls der Benutzer es speichern will
                 cv2.imwrite("last_screenshot_debug_original.png", img)
 
-            # optimized_img ist ein binarisiertes oder Graustufenbild
             optimized_img = self.auto_find_quest_text(img)
             
-            # NEU: Dynamische Tesseract-Konfiguration
             ocr_lang = self.config.get("ocr_language", "deu+eng")
             ocr_psm = self.config.get("ocr_psm", 6)
             
-            # Whitelist zur Reduzierung von Falscherkennung (Buchstaben, Umlaute, Zahlen, gängige Satzzeichen)
             whitelist = self.config.get("ocr_whitelist", 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyzäöüÄÖÜß0123456789.,?!:;\'"()[]-/')
 
             config = f'--oem 3 --psm {ocr_psm} -l {ocr_lang} -c tessedit_char_whitelist="{whitelist}"'
@@ -501,14 +491,12 @@ class VoiceEngine:
             
             lines = raw_text.split('\n')
             
-            # Verwendung der ausgelagerten Filterlogik
             cleaned_lines = self._filter_recognized_lines(lines)
 
             clean_output = ' '.join(cleaned_lines)
             clean_output = re.sub(r'\s+', ' ', clean_output).strip()
             
-            # NEU: Generischere Bereinigung von OCR-Artefakten
-            # Entferne häufige Fehler bei Leerzeichen/I/l/1-Kombinationen am Wortanfang/-ende
+            # Generischere Bereinigung von OCR-Artefakten
             clean_output = re.sub(r'(?:l|I|1)oo|o(?:l|I|1)|oo(?:l|I|1)', '', clean_output, flags=re.IGNORECASE) 
             clean_output = re.sub(r'oo|Oo|oO|Solo|solo|NYZ B|„Aa 1', '', clean_output)
             clean_output = re.sub(r'‘', "'", clean_output)
@@ -517,7 +505,6 @@ class VoiceEngine:
                 return ""
             
             try:
-                # Speichern des erkannten Textes
                 with open("last_recognized_text.txt", "w", encoding="utf-8") as f:
                     f.write("--- RAW TESSERACT OUTPUT ---\n")
                     f.write(raw_text)
